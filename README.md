@@ -28,8 +28,8 @@ OpenWrt 客户端访问控制插件（LuCI）。一个页面管两件事：**拉
 
 ```sh
 # 1. 下载并解压
-wget https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.0.tar.gz
-tar -xzf luci-app-clientblock-1.0.0.tar.gz
+wget https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.1.tar.gz
+tar -xzf luci-app-clientblock-1.0.1.tar.gz
 
 # 2. 安装
 cd luci-app-clientblock
@@ -57,10 +57,10 @@ sh install.sh --no-start    # 只装文件，不启动服务
 
 ```sh
 # 下载对应架构的 .apk 后
-apk add --allow-untrusted ./luci-app-clientblock-1.0.0-r1.apk
+apk add --allow-untrusted ./luci-app-clientblock-1.0.1-r1.apk
 ```
 
-> 实际文件名带架构与版本后缀，例如 `luci-app-clientblock-1.0.0-r1.apk`。
+> 实际文件名带架构与版本后缀，例如 `luci-app-clientblock-1.0.1-r1.apk`。
 > 用 `apk add --allow-untrusted ./luci-app-clientblock*.apk` 也可以。
 
 `.apk` 由 GitHub Actions 用官方 OpenWrt SDK 构建，在 [Releases](../../releases) 页面按架构下载。
@@ -68,7 +68,7 @@ apk add --allow-untrusted ./luci-app-clientblock-1.0.0-r1.apk
 ### 方式三：无人值守
 
 ```sh
-wget -qO- https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.0.tar.gz \
+wget -qO- https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.1.tar.gz \
   | tar -xz -C /tmp && sh /tmp/luci-app-clientblock/install.sh
 ```
 
