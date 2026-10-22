@@ -15,6 +15,7 @@ OpenWrt 客户端访问控制插件（LuCI）。一个页面管两件事：**拉
 | **IP 归属** | 离线查询，读取系统已有的 `ip2region_v4.xdb`，无网络请求 |
 | **自动防护** | 实时监听 syslog，登录失败达到阈值即封禁，**秒级响应** |
 | **可重命名** | 设备名称持久化，解禁再拉黑不丢 |
+| **登录日志** | 记录每一次 SSH / LuCI 登录（成功、失败、断开），含来源归属，保留 500 条 |
 | **丢包统计** | 每条规则显示实际丢弃的包数与字节数 |
 | **开机自愈** | 重启后从状态文件重建 nftables 规则 |
 
@@ -28,8 +29,8 @@ OpenWrt 客户端访问控制插件（LuCI）。一个页面管两件事：**拉
 
 ```sh
 # 1. 下载并解压
-wget https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.1.tar.gz
-tar -xzf luci-app-clientblock-1.0.1.tar.gz
+wget https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.1.0.tar.gz
+tar -xzf luci-app-clientblock-1.1.0.tar.gz
 
 # 2. 安装
 cd luci-app-clientblock
@@ -57,10 +58,10 @@ sh install.sh --no-start    # 只装文件，不启动服务
 
 ```sh
 # 下载对应架构的 .apk 后
-apk add --allow-untrusted ./luci-app-clientblock-1.0.1-r1.apk
+apk add --allow-untrusted ./luci-app-clientblock-1.1.0-r1.apk
 ```
 
-> 实际文件名带架构与版本后缀，例如 `luci-app-clientblock-1.0.1-r1.apk`。
+> 实际文件名带架构与版本后缀，例如 `luci-app-clientblock-1.1.0-r1.apk`。
 > 用 `apk add --allow-untrusted ./luci-app-clientblock*.apk` 也可以。
 
 `.apk` 由 GitHub Actions 用官方 OpenWrt SDK 构建，在 [Releases](../../releases) 页面按架构下载。
@@ -68,7 +69,7 @@ apk add --allow-untrusted ./luci-app-clientblock-1.0.1-r1.apk
 ### 方式三：无人值守
 
 ```sh
-wget -qO- https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.0.1.tar.gz \
+wget -qO- https://github.com/rheatin/luci-app-clientblock/releases/latest/download/luci-app-clientblock-1.1.0.tar.gz \
   | tar -xz -C /tmp && sh /tmp/luci-app-clientblock/install.sh
 ```
 
@@ -136,6 +137,37 @@ sh uninstall.sh
 
 ---
 
+## 登录日志
+
+`Login log` 页签记录所有经过路由器的登录活动，**倒序**显示最新在前，保留最近 500 条。
+
+| 字段 | 说明 |
+|---|---|
+| Time | 事件时间 |
+| Result | `success` 成功 / `failure` 失败 / `closed` 会话断开 |
+| Source | `ssh`、`ssh_password`、`ssh_user`、`web`、`web_auth` |
+| IP | 来源地址，已知设备会附带主机名 |
+| User | 尝试的用户名，未知用户显示 `(unknown)` |
+| Detail | 具体原因，公网地址附带归属地 |
+
+可记录的事件：
+
+| 事件 | 来源 | Detail |
+|---|---|---|
+| SSH 公钥登录成功 | `ssh` | `auth=pubkey` |
+| SSH 密码登录成功 | `ssh` | `auth=password` |
+| SSH 会话结束 | `ssh` | `session closed` |
+| SSH 密码错误 | `ssh_password` | `wrong password` |
+| SSH 尝试次数超限 | `ssh_password` | `too many attempts` |
+| SSH 未知用户名 | `ssh_user` | `unknown user` |
+| LuCI 登录成功 | `web` | `luci session` |
+| LuCI 登录失败 | `web_auth` | `bad credentials` |
+
+支持按来源和结果筛选，也可按 IP / 用户名 / 详情搜索。**Clear log** 清空。
+
+> 日志存储在 `/etc/clientblock/login.log`，格式为 `epoch|kind|result|ip|user|detail`。
+> 服务重启不会重复记录历史事件。
+
 ## 命令行
 
 ```sh
@@ -159,6 +191,10 @@ ubus call luci.clientblock rename  '{"mac":"aa:bb:cc:dd:ee:ff","name":"新名字
 ubus call luci.clientblock autoget
 ubus call luci.clientblock autoset '{"enabled":"1","threshold":"5","window":"600","ttl":"86400"}'
 ubus call luci.clientblock scan
+
+# 登录日志
+ubus call luci.clientblock loglist '{"limit":"100"}'
+ubus call luci.clientblock logclear
 ```
 
 ---

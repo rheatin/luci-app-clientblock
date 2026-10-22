@@ -5,6 +5,7 @@
 CONFIG=/etc/clientblock/auto.json
 LOG_TAG=clientblock-watch
 LOCK=/var/run/clientblock-watch.lock
+SEEN=/tmp/clientblock-seen
 
 enabled() {
 	[ -f "$CONFIG" ] || return 0
@@ -27,6 +28,20 @@ threshold() {
 	[ -f "$CONFIG" ] && t=$(sed -n 's/.*"threshold":\([0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null)
 	[ -n "$t" ] || t=5
 	echo "$t"
+}
+
+# log_event <kind> <result> <ip> <user> <detail>
+log_event() {
+	local now
+	now=$(date +%s)
+	ubus -S call luci.clientblock logevent \
+		"{\"epoch\":\"$now\",\"kind\":\"$1\",\"result\":\"$2\",\"ip\":\"$3\",\"user\":\"$4\",\"detail\":\"$5\"}" \
+		>/dev/null 2>&1
+}
+
+# extract the "user" field from a dropbear/luci line
+pick_user() {
+	printf '%s\n' "$1" | sed -n "s/.*for '\([^']*\)'.*/\1/p"
 }
 
 count_ip() {
@@ -59,42 +74,111 @@ count_ip() {
 }
 
 main() {
-	# Single instance: repeated service restarts must not stack watchers, or
-	# every failure is counted once per live process.
-	if ! mkdir "$LOCK" 2>/dev/null; then
-		if [ -f "$LOCK/pid" ] && kill -0 "$(cat "$LOCK/pid" 2>/dev/null)" 2>/dev/null; then
-			logger -t "$LOG_TAG" "already running (pid $(cat "$LOCK/pid")), exiting"
+	# Single instance. procd keeps fd 9 across respawn, so flock alone reports a
+	# phantom holder; a pidfile with a liveness check is reliable here.
+	# Take over from any leftover instance. Only touch pids of real
+	# clientblock-watch processes that are not our parent (procd).
+	MYPPID=$(awk '{print $4}' "/proc/$$/stat" 2>/dev/null)
+	for _p in $(ps w 2>/dev/null | grep "[c]lientblock-watch" | awk '{print $1}'); do
+		[ "$_p" = "$$" ] && continue
+		[ "$_p" = "$MYPPID" ] && continue
+		# skip anything that is not our own script path
+		grep -q "clientblock-watch" "/proc/$_p/cmdline" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+	done
+
+	PIDFILE=/var/run/clientblock-watch.pid
+	if [ -f "$PIDFILE" ]; then
+		OLD=$(cat "$PIDFILE" 2>/dev/null)
+		if [ -n "$OLD" ] && [ "$OLD" != "$$" ] && kill -0 "$OLD" 2>/dev/null; then
+			logger -t "$LOG_TAG" "already running (pid $OLD), exiting"
 			exit 0
 		fi
-		rm -rf "$LOCK"
-		mkdir "$LOCK" 2>/dev/null || exit 0
 	fi
-	echo $$ > "$LOCK/pid"
-	trap 'rm -rf "$LOCK"' EXIT INT TERM
+	echo $$ > "$PIDFILE"
+	trap 'rm -f "$PIDFILE"' EXIT INT TERM
 
 	enabled || { logger -t "$LOG_TAG" "disabled, exiting"; exit 0; }
 	local th
 	th=$(threshold)
+	START_HMS=$(date +%H:%M:%S)
 	logger -t "$LOG_TAG" "started (threshold=$th)"
+
+	# logread -f replays the recent buffer on start; seed the fingerprint set
+	# with what is already buffered so a restart does not re-record history.
+	if [ ! -f "$SEEN" ]; then
+		: > "$SEEN"
+		logread 2>/dev/null | tail -n 300 | while IFS= read -r l; do
+			printf '%s\n' "$l" | cksum | cut -d' ' -f1
+		done >> "$SEEN" 2>/dev/null || true
+	fi
 
 	# -f follows the ubus log stream. Each line is matched for auth failures;
 	# the match is deliberately narrow so normal traffic costs nothing.
 	logread -f 2>/dev/null |
 	while IFS= read -r line; do
-		# classify the failure so each source can be enabled separately
+		ts=$(date +%s)
+
+		# logread -f re-emits its buffer on start. Each record carries its own
+		# "MMM DD HH:MM:SS"; compare it against the start second as text.
+		lhm=$(printf '%s\n' "$line" | sed -n 's/^[A-Z][a-z][a-z] [A-Z][a-z][a-z] *[0-9][0-9]* \([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\).*/\1/p')
+		if [ -n "$lhm" ] && [ -n "$START_HMS" ]; then
+			[ "$lhm" \< "$START_HMS" ] && continue
+		fi
+
+		# ---- SSH: success ----
+		if printf '%s' "$line" | grep -q "auth succeeded for"; then
+			ip=$(printf '%s\n' "$line" | sed -n 's/.* from \([0-9.]*\):[0-9]*$/\1/p')
+			user=$(pick_user "$line")
+			method=password
+			printf '%s' "$line" | grep -q "Pubkey auth" && method=pubkey
+			[ -n "$ip" ] && log_event ssh success "$ip" "$user" "auth=$method"
+			continue
+		fi
+
+		# ---- SSH: session end ----
+		if printf '%s' "$line" | grep -q "Exit ("; then
+			user=$(printf '%s\n' "$line" | sed -n 's/.*Exit (\([^)]*\)).*/\1/p')
+			ip=$(printf '%s\n' "$line" | sed -n 's/.*from <\([0-9.]*\):[0-9]*>.*/\1/p')
+			[ -n "$ip" ] && log_event ssh disconnect "$ip" "$user" "session closed"
+			continue
+		fi
+
+		# ---- LuCI: success ----
+		if printf '%s' "$line" | grep -q "accepted login"; then
+			ip=$(printf '%s\n' "$line" | sed -n 's/.* from \([0-9.]*\)$/\1/p')
+			user=$(printf '%s\n' "$line" | sed -n 's/.* for \([^ ]*\) from .*/\1/p')
+			[ -n "$ip" ] && log_event web success "$ip" "$user" "luci session"
+			continue
+		fi
+
+		# ---- failures ----
 		kind=""
+		detail=""
 		case "$line" in
-			*"Bad password attempt"*|*"Max auth tries reached"*) kind=ssh_password ;;
-			*"Login attempt for nonexistent user"*)                  kind=ssh_user ;;
-			*"failed login"*)                                        kind=web_auth ;;
+			*"Bad password attempt"*)
+				kind=ssh_password; detail="wrong password" ;;
+			*"Max auth tries reached"*)
+				kind=ssh_password; detail="too many attempts" ;;
+			*"Login attempt for nonexistent user"*)
+				kind=ssh_user; detail="unknown user" ;;
+			*"failed login"*)
+				kind=web_auth; detail="bad credentials" ;;
 			*) continue ;;
 		esac
-		enabled_kind "$kind" || continue
 
 		ip=$(printf '%s\n' "$line" | sed -n 's/.*from <\([0-9.]*\):[0-9]*>.*/\1/p')
 		[ -n "$ip" ] || ip=$(printf '%s\n' "$line" | sed -n 's/.*from \([0-9.]*\):.*/\1/p')
-		[ -n "$ip" ] || ip=$(printf '%s\n' "$line" | sed -n 's/.*from \([0-9.]*\)$/\1/p')
-		[ -n "$ip" ] && count_ip "$ip" "$th" "$kind"
+		[ -n "$ip" ] || ip=$(printf '%s\n' "$line" | sed -n 's/.* from \([0-9.]*\)$/\1/p')
+		[ -z "$ip" ] && continue
+
+		user=$(pick_user "$line")
+		[ -n "$user" ] || user=$(printf '%s\n' "$line" | sed -n 's/.*for \([^ ]*\) from .*/\1/p')
+		# dropbear omits the name for unknown users; make that explicit
+		[ -n "$user" ] || user="(unknown)"
+
+		log_event "$kind" failure "$ip" "$user" "$detail"
+		enabled_kind "$kind" || continue
+		count_ip "$ip" "$th" "$kind"
 	done
 }
 

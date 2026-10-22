@@ -11,6 +11,8 @@ local STATE_DIR = "/etc/clientblock"
 local STATE_FILE = STATE_DIR .. "/blocked.json"
 local NAME_FILE = STATE_DIR .. "/names.json"
 local IPSTATE_FILE = STATE_DIR .. "/blocked_ips.json"
+local LOG_FILE = STATE_DIR .. "/login.log"
+local LOG_MAX = 500
 local AUTOCFG_FILE = STATE_DIR .. "/auto.json"
 -- legacy data from luci-app-watchdog, imported once then ignored
 local WD_BLACKLIST = "/usr/share/watchdog/api/ip_blacklist"
@@ -536,6 +538,17 @@ local GEO_INDEX = 14
 local _geo_db, _geo_path
 local _geo_cache = {}
 
+local function is_private_ip(ip)
+	local a, b = ip:match("^(%d+)%.(%d+)%.")
+	a, b = tonumber(a), tonumber(b)
+	if not a then return true end
+	return a == 10 or a == 127 or a == 0
+		or (a == 172 and b >= 16 and b <= 31)
+		or (a == 192 and b == 168)
+		or (a == 169 and b == 254)
+		or (a == 100 and b >= 64 and b <= 127)
+end
+
 local function geo_open()
 	if _geo_db then return _geo_db end
 	for _, p in ipairs(GEO_DB_PATHS) do
@@ -608,6 +621,118 @@ local function geo_lookup(ip)
 	end
 	_geo_cache[ip] = false
 	return nil
+end
+
+-- ============================================================
+-- Login activity log
+-- ============================================================
+local LOG_FIELDS = 6   -- epoch|kind|result|ip|user|detail
+
+local function log_esc(v)
+	v = tostring(v or "")
+	v = v:gsub("[\r\n\t|]", " ")
+	return v
+end
+
+-- Append one record. The file is a pipe-separated ring trimmed to LOG_MAX.
+local function log_append(epoch, kind, result, ip, user, detail)
+	fs.mkdirr(STATE_DIR)
+	local f = io.open(LOG_FILE, "a")
+	if not f then return false end
+	f:write(table.concat({
+		tostring(epoch), log_esc(kind), log_esc(result),
+		log_esc(ip), log_esc(user), log_esc(detail)
+	}, "|") .. "\n")
+	f:close()
+
+	-- trim
+	local count = 0
+	local r = io.open(LOG_FILE, "r")
+	if r then
+		for _ in r:lines() do count = count + 1 end
+		r:close()
+	end
+	if count > LOG_MAX then
+		local keep = {}
+		local i = 0
+		local r2 = io.open(LOG_FILE, "r")
+		if r2 then
+			for line in r2:lines() do
+				i = i + 1
+				if i > count - LOG_MAX then keep[#keep + 1] = line end
+			end
+			r2:close()
+		end
+		local w = io.open(LOG_FILE, "w")
+		if w then
+			w:write(table.concat(keep, "\n") .. "\n")
+			w:close()
+		end
+	end
+	return true
+end
+
+local function log_read(limit)
+	local out = {}
+	local f = io.open(LOG_FILE, "r")
+	if not f then return out end
+	local all = {}
+	for line in f:lines() do
+		local ts, kind, result, ip, user, detail =
+			line:match("^(%d+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+		if ts then
+			all[#all + 1] = {
+				ts = tonumber(ts), kind = kind, result = result,
+				ip = ip, user = user, detail = detail,
+			}
+		end
+	end
+	f:close()
+	-- newest first
+	for i = #all, 1, -1 do
+		out[#out + 1] = all[i]
+		if limit and #out >= limit then break end
+	end
+	return out
+end
+
+-- Called by the watcher for every login line it sees.
+function methods.logevent(epoch, kind, result, ip, user, detail)
+	epoch = tonumber(epoch) or os.time()
+	if not ip or ip == "" then return err("ip required") end
+	if not log_append(epoch, kind, result, ip, user, detail) then
+		return err("cannot write log")
+	end
+	return ok({})
+end
+
+function methods.loglist(limit)
+	limit = tonumber(limit) or LOG_MAX
+	local entries = log_read(limit)
+	-- enrich with hostname and region, cached per call
+	local leases = parse_leases()
+	local reverse = {}
+	for mac, l in pairs(leases) do
+		if l.ip and l.host then reverse[l.ip] = l.host end
+	end
+	local statics = parse_static_hosts()
+	for mac, h in pairs(statics) do
+		if h.ip and h.host then reverse[h.ip] = reverse[h.ip] or h.host end
+	end
+	for _, e in ipairs(entries) do
+		e.host = reverse[e.ip]
+		-- private and reserved ranges have no meaningful region
+		if not e.ip:find(":") and not is_private_ip(e.ip) then
+			local g = geo_lookup(e.ip)
+			if g and not g:match("^Reserved") then e.geo = g end
+		end
+	end
+	return { success = true, running = true, entries = entries, total = #entries }, true
+end
+
+function methods.logclear()
+	fs.writefile(LOG_FILE, "")
+	return ok({})
 end
 
 function methods.iplist()
@@ -1007,6 +1132,9 @@ if arg[1] == "list" then
 		ipflush     = {},
 		scan        = {},
 		geoinfo     = { ip = "" },
+		logevent    = { epoch = "", kind = "", result = "", ip = "", user = "", detail = "" },
+		loglist     = { limit = "" },
+		logclear    = {},
 		autoget     = {},
 		autoset     = { enabled = "", threshold = "", window = "", ttl = "",
 		                ssh_password = "", ssh_user = "", web_auth = "" },
@@ -1042,6 +1170,15 @@ elseif arg[1] == "call" then
 		res = methods.ipdel(req.ip)
 	elseif name == "ipflush" then
 		res = methods.ipflush()
+	elseif name == "logevent" then
+		res = methods.logevent(req.epoch, req.kind, req.result,
+		                       req.ip, req.user, req.detail)
+	elseif name == "loglist" then
+		res = methods.loglist(req.limit)
+		reply_list(res, { "entries" })
+		return
+	elseif name == "logclear" then
+		res = methods.logclear()
 	elseif name == "geoinfo" then
 		res = methods.geoinfo(req.ip)
 	elseif name == "scan" then

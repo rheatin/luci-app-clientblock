@@ -44,6 +44,17 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callLogList = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'loglist',
+	params: ['limit']
+});
+
+var callLogClear = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'logclear'
+});
+
 var callAutoGet = rpc.declare({
 	object: 'luci.clientblock',
 	method: 'autoget'
@@ -95,6 +106,25 @@ var STYLE = `
 .cb-btn[disabled] { opacity: .45; cursor: default; }
 .cb-btn-primary { border-color: rgba(59,130,246,.7); color: #2563eb; font-weight: 600; }
 .cb-btn-primary:hover { background: rgba(59,130,246,.14); }
+
+/* ---- login log ---- */
+.cb-log-filters { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; margin-bottom: .85rem; }
+.cb-log-filters input[type=text] { flex: 1 1 14rem; min-width: 9rem; padding: .38rem .6rem;
+	border-radius: .3rem; border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; }
+.cb-log-filters select { padding: .38rem .5rem; border-radius: .3rem;
+	border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; }
+.cb-log { font-size: .82rem; }
+.cb-log tbody tr td { vertical-align: top; }
+.cb-log .cb-t { white-space: nowrap; font-family: ui-monospace, monospace; font-size: .76rem; opacity: .8; }
+.cb-log .cb-u { font-weight: 600; }
+.cb-log .cb-ip { font-family: ui-monospace, monospace; font-size: .78rem; }
+.cb-log .cb-detail { opacity: .75; font-size: .78rem; }
+.cb-res { display: inline-block; padding: .05rem .45rem; border-radius: .5rem;
+	font-size: .72rem; font-weight: 600; white-space: nowrap; }
+.cb-res-ok { background: rgba(34,197,94,.16); color: #16a34a; }
+.cb-res-fail { background: rgba(239,68,68,.16); color: #dc2626; }
+.cb-res-end { background: rgba(128,128,128,.18); opacity: .85; }
+.cb-kind { font-size: .72rem; opacity: .7; font-family: ui-monospace, monospace; }
 .cb-drop { font-size: .75rem; opacity: .7; white-space: nowrap; }
 .cb-empty { text-align: center; padding: 2rem 0; opacity: .6; }
 .cb-tabs { display: flex; gap: .25rem; border-bottom: 1px solid rgba(128,128,128,.3); margin-bottom: 1rem; }
@@ -189,11 +219,12 @@ function fmtTime(ts) {
 
 return view.extend({
 	load: function () {
-		return Promise.all([ callList('1'), callIpList(), callAutoGet() ]).then(function (r) {
-			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {};
+		return Promise.all([ callList('1'), callIpList(), callAutoGet(), callLogList('500') ]).then(function (r) {
+			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {}, logs = r[3] || {};
 			dev.ips = ips.ips || [];
 			dev.ip_count = ips.count || 0;
 			dev.auto = auto;
+			dev.logs = logs.entries || [];
 			return dev;
 		});
 	},
@@ -291,6 +322,88 @@ return view.extend({
 				(d.ip || '').indexOf(q) !== -1 ||
 				(d.mac || '').toLowerCase().indexOf(q) !== -1;
 		});
+	},
+
+	refreshLogs: function () {
+		var self = this;
+		return callLogList('500').then(function (res) {
+			self.logs = (res && res.entries) || [];
+			self.renderLogs();
+		}).catch(function () {
+			self.renderLogs();
+		});
+	},
+
+	handleLogClear: function (ev) {
+		var self = this;
+		if (!confirm(_('Clear the login log?'))) return;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callLogClear().then(function () {
+			self.logs = [];
+			self.renderLogs();
+			ui.addNotification(null, E('p', {}, _('Log cleared')), 'info');
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () {
+			btn.disabled = false;
+		});
+	},
+
+	renderLogs: function () {
+		var tbody = document.getElementById('cb-log-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var self = this;
+		var all = this.logs || [];
+		var q = (this.logQuery || '').toLowerCase().trim();
+		var kindF = this.logKind || 'all';
+		var resF = this.logResult || 'all';
+
+		var list = all.filter(function (e) {
+			if (kindF !== 'all' && e.kind !== kindF) return false;
+			if (resF === 'ok' && e.result !== 'success') return false;
+			if (resF === 'fail' && e.result !== 'failure') return false;
+			if (resF === 'end' && e.result !== 'disconnect') return false;
+			if (q) {
+				var hay = [ e.ip, e.user, e.detail, e.host ].join(' ').toLowerCase();
+				if (hay.indexOf(q) === -1) return false;
+			}
+			return true;
+		});
+
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+				all.length ? _('No entries match the filter') : _('No login activity recorded yet'))));
+		}
+
+		list.forEach(function (e) {
+			var resBadge;
+			if (e.result === 'success')
+				resBadge = E('span', { 'class': 'cb-res cb-res-ok' }, _('success'));
+			else if (e.result === 'failure')
+				resBadge = E('span', { 'class': 'cb-res cb-res-fail' }, _('failure'));
+			else
+				resBadge = E('span', { 'class': 'cb-res cb-res-end' }, _('closed'));
+
+			var host = e.host ? E('span', { 'class': 'cb-kind' }, ' (' + e.host + ')') : '';
+
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-t' }, fmtTime(e.ts)),
+				E('td', {}, resBadge),
+				E('td', { 'class': 'cb-kind' }, e.kind || '-'),
+				E('td', { 'class': 'cb-ip' }, e.ip || '-', host),
+				E('td', { 'class': 'cb-u' }, e.user || '-'),
+				E('td', { 'class': 'cb-detail' }, [
+					e.detail || '',
+					e.geo ? E('div', { 'class': 'cb-kind', 'style': 'margin-top:.15rem' }, fmtGeo(e.geo)) : ''
+				])
+			]));
+		});
+
+		var cnt = document.getElementById('cb-log-count');
+		if (cnt) cnt.textContent = list.length + ' / ' + all.length + ' ' + _('entries');
 	},
 
 	refreshAuto: function () {
@@ -556,13 +669,14 @@ return view.extend({
 
 	switchTab: function (name) {
 		this.tab = name;
-		['devices', 'ips'].forEach(function (t) {
+		['devices', 'ips', 'logs'].forEach(function (t) {
 			var pane = document.getElementById('cb-pane-' + t);
 			var btn = document.getElementById('cb-tab-' + t);
 			if (pane) pane.classList.toggle('active', t === name);
 			if (btn) btn.classList.toggle('active', t === name);
 		});
 		if (name === 'ips') return this.refreshIps();
+		if (name === 'logs') return this.refreshLogs();
 	},
 
 	renderTable: function () {
@@ -637,6 +751,10 @@ return view.extend({
 		this.ips = (data && data.ips) || [];
 		this.ipCount = (data && data.ip_count) || 0;
 		this.auto = (data && data.auto) || {};
+		this.logs = (data && data.logs) || [];
+		this.logQuery = '';
+		this.logKind = 'all';
+		this.logResult = 'all';
 		this.query = '';
 		this.ipQuery = '';
 		this.tab = 'devices';
@@ -769,24 +887,74 @@ return view.extend({
 			])
 		]);
 
+		var logsPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-logs'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Every successful and failed login through SSH or LuCI, newest first. Kept in memory-backed storage, capped at 500 entries.')),
+			E('div', { 'class': 'cb-log-filters' }, [
+				E('input', {
+					'type': 'text',
+					'placeholder': _('Filter by IP, user or detail'),
+					'input': function (ev) { self.logQuery = ev.target.value; self.renderLogs(); }
+				}),
+				E('select', {
+					'change': function (ev) { self.logKind = ev.target.value; self.renderLogs(); }
+				}, [
+					E('option', { 'value': 'all' }, _('All sources')),
+					E('option', { 'value': 'ssh_password' }, _('SSH password')),
+					E('option', { 'value': 'ssh_user' }, _('SSH unknown user')),
+					E('option', { 'value': 'ssh' }, _('SSH session')),
+					E('option', { 'value': 'web' }, _('LuCI')),
+					E('option', { 'value': 'web_auth' }, _('LuCI failure'))
+				]),
+				E('select', {
+					'change': function (ev) { self.logResult = ev.target.value; self.renderLogs(); }
+				}, [
+					E('option', { 'value': 'all' }, _('All results')),
+					E('option', { 'value': 'ok' }, _('Success only')),
+					E('option', { 'value': 'fail' }, _('Failures only'))
+				]),
+				E('span', { 'class': 'cb-count', 'id': 'cb-log-count' }, ''),
+				E('button', { 'class': 'cb-btn cb-btn-danger',
+					'click': function (ev) { self.handleLogClear(ev); } }, _('Clear log'))
+			]),
+			E('table', { 'class': 'cb-table cb-log' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('Time')),
+					E('th', {}, _('Result')),
+					E('th', {}, _('Source')),
+					E('th', {}, _('IP')),
+					E('th', {}, _('User')),
+					E('th', {}, _('Detail'))
+				])),
+				E('tbody', { 'id': 'cb-log-tbody' })
+			])
+		]);
+
 		var root = E('div', { 'class': 'cb-wrap' }, [
 			E('style', {}, STYLE),
 			E('h2', {}, _('Client Access Control')),
 			E('div', { 'class': 'cb-tabs' }, [
 				tabBtn('devices', _('Devices')),
-				tabBtn('ips', _('External IPs'))
+				tabBtn('ips', _('External IPs')),
+				tabBtn('logs', _('Login log'))
 			]),
 			devicesPane,
-			ipsPane
+			ipsPane,
+			logsPane
 		]);
 
 		window.setTimeout(function () {
 			self.renderTable();
 			self.renderAuto();
+			self.renderLogs();
 		}, 0);
 
 		poll.add(function () {
 			if (self.tab === 'ips') return self.refreshIps();
+			if (self.tab === 'logs') return self.refreshLogs();
 			return self.refresh();
 		}, 30);
 
