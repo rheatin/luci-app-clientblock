@@ -115,21 +115,18 @@ sh uninstall.sh
 
 **Automatic protection** 面板：
 
-| 字段 | 默认 | 含义 |
+| 项 | 默认 | 含义 |
 |---|---|---|
-| 启用 | ✓ | 总开关 |
-| Threshold | 5 | 触发封禁的失败次数 |
+| 主开关 | 开 | 总开关 |
+| SSH password failure | 选 | `Bad password attempt` / `Max auth tries reached` |
+| SSH unknown user | 选 | `Login attempt for nonexistent user` |
+| LuCI login failure | 选 | `failed login` |
+| Trigger after | 5 | 触发封禁的失败次数 |
 | Within | 600 | 计数时间窗（秒） |
 | Expire after | 86400 | 自动条目有效期（秒），`0` = 永久 |
 
-匹配的日志模式：
-
-```
-Bad password attempt
-Login attempt for nonexistent user
-Max auth tries reached
-failed login
-```
+三个触发源可以独立勾选。例如只想防 SSH 爆破、不拦截 Web 登录失败，
+取消勾选 `LuCI login failure` 即可 —— 该来源的失败事件会被完全忽略。
 
 命中后立即写入 nftables 集合，**无需等待轮询**。
 

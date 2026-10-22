@@ -52,7 +52,7 @@ var callAutoGet = rpc.declare({
 var callAutoSet = rpc.declare({
 	object: 'luci.clientblock',
 	method: 'autoset',
-	params: ['enabled', 'threshold', 'window', 'ttl']
+	params: ['enabled', 'threshold', 'window', 'ttl', 'ssh_password', 'ssh_user', 'web_auth']
 });
 
 var callScan = rpc.declare({
@@ -93,6 +93,8 @@ var STYLE = `
 .cb-btn-ok { border-color: rgba(22,163,74,.6); color: #16a34a; }
 .cb-btn-ok:hover { background: rgba(22,163,74,.12); }
 .cb-btn[disabled] { opacity: .45; cursor: default; }
+.cb-btn-primary { border-color: rgba(59,130,246,.7); color: #2563eb; font-weight: 600; }
+.cb-btn-primary:hover { background: rgba(59,130,246,.14); }
 .cb-drop { font-size: .75rem; opacity: .7; white-space: nowrap; }
 .cb-empty { text-align: center; padding: 2rem 0; opacity: .6; }
 .cb-tabs { display: flex; gap: .25rem; border-bottom: 1px solid rgba(128,128,128,.3); margin-bottom: 1rem; }
@@ -107,15 +109,50 @@ var STYLE = `
 .cb-ipform input.cb-ip { flex: 0 0 16rem; font-family: ui-monospace, monospace; }
 .cb-ipform input.cb-note { flex: 1 1 12rem; min-width: 8rem; }
 .cb-fam { font-size: .72rem; opacity: .65; }
-.cb-auto { border: 1px solid rgba(128,128,128,.3); border-radius: .4rem; padding: .7rem .85rem; margin-bottom: 1rem; }
-.cb-auto-head { display: flex; align-items: center; gap: .6rem; font-weight: 600; margin-bottom: .5rem; }
-.cb-auto-body { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; font-size: .82rem; }
-.cb-auto-field { display: flex; align-items: center; gap: .35rem; }
-.cb-auto-field input { width: 5.5rem; padding: .25rem .4rem; }
-.cb-auto-hint { font-size: .75rem; opacity: .65; margin-top: .45rem; }
 .cb-src { font-size: .7rem; padding: .05rem .35rem; border-radius: .5rem; background: rgba(128,128,128,.18); opacity: .85; }
 .cb-src-auto { background: rgba(239,68,68,.16); color: #dc2626; }
 .cb-src-watchdog { background: rgba(59,130,246,.16); color: #2563eb; }
+
+/* ---- cards ---- */
+.cb-card { border: 1px solid rgba(128,128,128,.28); border-radius: .55rem;
+	background: rgba(128,128,128,.045); margin-bottom: 1rem; overflow: hidden; }
+.cb-card-head { display: flex; align-items: center; gap: .6rem; padding: .65rem .9rem;
+	font-weight: 600; font-size: .92rem; background: rgba(128,128,128,.07);
+	border-bottom: 1px solid rgba(128,128,128,.22); }
+.cb-card-head .cb-dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent, #3b82f6); flex: 0 0 auto; }
+.cb-card-body { padding: .85rem .9rem; }
+.cb-card-hint { font-size: .76rem; opacity: .62; line-height: 1.5; }
+
+/* ---- toggle switch ---- */
+.cb-switch { position: relative; display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; user-select: none; }
+.cb-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.cb-switch .cb-track { width: 2.4rem; height: 1.3rem; border-radius: 1rem; background: rgba(128,128,128,.38);
+	transition: background .18s ease; flex: 0 0 auto; position: relative; }
+.cb-switch .cb-track::after { content: ''; position: absolute; top: .15rem; left: .15rem;
+	width: 1rem; height: 1rem; border-radius: 50%; background: #fff;
+	box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .18s ease; }
+.cb-switch input:checked + .cb-track { background: #22c55e; }
+.cb-switch input:checked + .cb-track::after { transform: translateX(1.1rem); }
+.cb-switch input:focus-visible + .cb-track { outline: 2px solid var(--accent, #3b82f6); outline-offset: 2px; }
+
+/* ---- trigger chips ---- */
+.cb-triggers { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .2rem; }
+.cb-chip { display: inline-flex; align-items: center; gap: .4rem; padding: .38rem .7rem;
+	border: 1px solid rgba(128,128,128,.35); border-radius: 2rem; cursor: pointer;
+	font-size: .8rem; background: transparent; transition: all .15s ease; user-select: none; }
+.cb-chip:hover { background: rgba(128,128,128,.1); }
+.cb-chip input { margin: 0; cursor: pointer; }
+.cb-chip.on { border-color: rgba(34,197,94,.65); background: rgba(34,197,94,.12); font-weight: 600; }
+.cb-chip .cb-chip-code { font-family: ui-monospace, monospace; font-size: .72rem; opacity: .55; }
+
+/* ---- fields ---- */
+.cb-fields { display: flex; flex-wrap: wrap; gap: 1.1rem; align-items: flex-end; margin-top: .9rem; }
+.cb-field { display: flex; flex-direction: column; gap: .25rem; }
+.cb-field > span { font-size: .74rem; opacity: .7; }
+.cb-field input { width: 6rem; padding: .35rem .5rem; border-radius: .3rem;
+	border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; font-size: .85rem; }
+.cb-field input:focus { outline: none; border-color: var(--accent, #3b82f6); }
+.cb-actions { display: flex; gap: .5rem; margin-left: auto; }
 `;
 
 function fmtBytes(n) {
@@ -282,9 +319,16 @@ return view.extend({
 		var t = document.getElementById('cb-auto-threshold');
 		var w = document.getElementById('cb-auto-window');
 		var l = document.getElementById('cb-auto-ttl');
+		function trig(key) {
+			var el = document.getElementById('cb-trig-' + key);
+			return el && el.checked ? '1' : '0';
+		}
 		var btn = ev.currentTarget;
 		btn.disabled = true;
-		return callAutoSet(this.auto.enabled, t ? t.value : '', w ? w.value : '', l ? l.value : '')
+		return callAutoSet(
+				self.auto.enabled ? '1' : '0',
+				t ? t.value : '', w ? w.value : '', l ? l.value : '',
+				trig('ssh_password'), trig('ssh_user'), trig('web_auth'))
 			.then(function (res) {
 				if (res && res.success === false) throw new Error(res.error || _('Failed'));
 				self.auto = res || self.auto;
@@ -321,50 +365,64 @@ return view.extend({
 
 		var a = this.auto || {};
 		var self = this;
+		var on = !!a.enabled;
 
-		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
+		box.appendChild(E('label', { 'class': 'cb-switch' }, [
 			E('input', {
 				'type': 'checkbox',
-				'checked': a.enabled ? 'checked' : null,
+				'checked': on ? 'checked' : null,
 				'change': function (ev) { self.handleAutoToggle(ev); }
 			}),
-			E('span', {}, _('Enable'))
+			E('span', { 'class': 'cb-track' }),
+			E('span', {}, on ? _('Protection on') : _('Protection off'))
 		]));
 
-		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
-			E('span', {}, _('Threshold')),
-			E('input', {
-				'type': 'number', 'id': 'cb-auto-threshold', 'min': '1', 'max': '100',
-				'value': a.threshold || 5
-			}),
-			E('span', { 'style': 'opacity:.7' }, _('failures'))
+		var kinds = [
+			{ key: 'ssh_password', label: _('SSH password failure'), code: 'Bad password / Max auth tries' },
+			{ key: 'ssh_user',     label: _('SSH unknown user'),     code: 'nonexistent user' },
+			{ key: 'web_auth',     label: _('LuCI login failure'),   code: 'failed login' }
+		];
+		var chips = E('div', { 'class': 'cb-triggers', 'id': 'cb-trigger-group' });
+		kinds.forEach(function (k) {
+			var checked = a[k.key] !== false;
+			chips.appendChild(E('label', { 'class': 'cb-chip' + (checked ? ' on' : '') }, [
+				E('input', {
+					'type': 'checkbox',
+					'id': 'cb-trig-' + k.key,
+					'checked': checked ? 'checked' : null,
+					'change': function (ev) {
+						ev.target.parentNode.classList.toggle('on', ev.target.checked);
+					}
+				}),
+				E('span', {}, k.label),
+				E('span', { 'class': 'cb-chip-code' }, k.code)
+			]));
+		});
+
+		box.appendChild(chips);
+		box.appendChild(E('div', { 'class': 'cb-fields' }, [
+			E('label', { 'class': 'cb-field' }, [
+				E('span', {}, _('Trigger after')),
+				E('input', { 'type': 'number', 'id': 'cb-auto-threshold', 'min': '1', 'max': '100',
+					'value': a.threshold || 5 })
+			]),
+			E('label', { 'class': 'cb-field' }, [
+				E('span', {}, _('Within (seconds)')),
+				E('input', { 'type': 'number', 'id': 'cb-auto-window', 'min': '60', 'max': '86400',
+					'value': a.window || 600 })
+			]),
+			E('label', { 'class': 'cb-field' }, [
+				E('span', {}, _('Expire after (0 = never)')),
+				E('input', { 'type': 'number', 'id': 'cb-auto-ttl', 'min': '0', 'max': '2592000',
+					'value': a.ttl === 0 ? 0 : (a.ttl || 86400) })
+			]),
+			E('div', { 'class': 'cb-actions' }, [
+				E('button', { 'class': 'cb-btn cb-btn-primary',
+					'click': function (ev) { self.handleAutoSave(ev); } }, _('Save')),
+				E('button', { 'class': 'cb-btn',
+					'click': function (ev) { self.handleScanNow(ev); } }, _('Scan now'))
+			])
 		]));
-
-		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
-			E('span', {}, _('Within')),
-			E('input', {
-				'type': 'number', 'id': 'cb-auto-window', 'min': '60', 'max': '86400',
-				'value': a.window || 600
-			}),
-			E('span', { 'style': 'opacity:.7' }, _('seconds'))
-		]));
-
-		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
-			E('span', {}, _('Expire after')),
-			E('input', {
-				'type': 'number', 'id': 'cb-auto-ttl', 'min': '0', 'max': '2592000',
-				'value': a.ttl === 0 ? 0 : (a.ttl || 86400)
-			}),
-			E('span', { 'style': 'opacity:.7' }, _('seconds (0 = never)'))
-		]));
-
-		box.appendChild(E('button', {
-			'class': 'cb-btn', 'click': function (ev) { self.handleAutoSave(ev); }
-		}, _('Save')));
-
-		box.appendChild(E('button', {
-			'class': 'cb-btn', 'click': function (ev) { self.handleScanNow(ev); }
-		}, _('Scan now')));
 	},
 
 	refreshIps: function () {
@@ -662,11 +720,16 @@ return view.extend({
 		}, [
 			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
 				_('Blocked addresses cannot be reached from your LAN, and cannot reach it. Both directions are dropped. CIDR ranges are supported.')),
-			E('div', { 'class': 'cb-auto' }, [
-				E('div', { 'class': 'cb-auto-head' }, _('Automatic protection')),
-				E('div', { 'class': 'cb-auto-body', 'id': 'cb-auto-body' }),
-				E('div', { 'class': 'cb-auto-hint' },
-					_('Sources that fail to log in repeatedly (SSH or LuCI) are blocked automatically. Checks run every minute.'))
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Automatic protection'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-auto-body', 'id': 'cb-auto-body' }),
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-top:.75rem' },
+						_('A source is blocked once it produces the selected failures often enough within the window. Detection is live, not polled.'))
+				])
 			]),
 			E('div', { 'style': 'display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.6rem' }, [
 				E('span', { 'style': 'font-size:.8rem;opacity:.6;align-self:center' }, _('Quick fill:')),

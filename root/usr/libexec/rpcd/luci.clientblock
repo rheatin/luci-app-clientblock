@@ -139,19 +139,27 @@ local function load_autocfg()
 	local f = io.open(AUTOCFG_FILE, "r")
 	if not f then
 		-- sensible default: protection is on
-		return { enabled = true, threshold = 5, window = 600, ttl = 86400, imported = false }
+		return { enabled = true, threshold = 5, window = 600, ttl = 86400,
+		         imported = false, ssh_password = true, ssh_user = true,
+		         web_auth = true }
 	end
 	local raw = f:read("*a")
 	f:close()
 	local parsed = jsonc.parse(raw)
 	if type(parsed) ~= "table" then
-		return { enabled = true, threshold = 5, window = 600, ttl = 86400, imported = false }
+		return { enabled = true, threshold = 5, window = 600, ttl = 86400,
+		         imported = false, ssh_password = true, ssh_user = true,
+		         web_auth = true }
 	end
 	parsed.enabled = parsed.enabled ~= false
 	parsed.threshold = tonumber(parsed.threshold) or 5
 	parsed.window = tonumber(parsed.window) or 600
 	parsed.ttl = tonumber(parsed.ttl) or 86400
 	parsed.imported = parsed.imported and true or false
+	-- per-source triggers: absent means on
+	parsed.ssh_password = parsed.ssh_password ~= false
+	parsed.ssh_user = parsed.ssh_user ~= false
+	parsed.web_auth = parsed.web_auth ~= false
 	return parsed
 end
 
@@ -839,10 +847,11 @@ function methods.autoget()
 	local imported = import_watchdog(cfg)
 	return { success = true, running = true, enabled = cfg.enabled,
 	         threshold = cfg.threshold, window = cfg.window, ttl = cfg.ttl,
-	         imported = imported }
+	         ssh_password = cfg.ssh_password, ssh_user = cfg.ssh_user,
+	         web_auth = cfg.web_auth, imported = imported }
 end
 
-function methods.autoset(enabled, threshold, window, ttl)
+function methods.autoset(enabled, threshold, window, ttl, ssh_password, ssh_user, web_auth)
 	local cfg = load_autocfg()
 	if enabled ~= nil and enabled ~= "" then
 		cfg.enabled = (enabled == true or enabled == "1" or enabled == 1)
@@ -853,9 +862,19 @@ function methods.autoset(enabled, threshold, window, ttl)
 	if window and window >= 60 and window <= 86400 then cfg.window = window end
 	ttl = tonumber(ttl)
 	if ttl and ttl >= 0 and ttl <= 2592000 then cfg.ttl = ttl end
+	local function flag(v)
+		if v == nil or v == "" then return nil end
+		return v == true or v == "1" or v == 1 or v == "true"
+	end
+	local f
+	f = flag(ssh_password); if f ~= nil then cfg.ssh_password = f end
+	f = flag(ssh_user);     if f ~= nil then cfg.ssh_user = f end
+	f = flag(web_auth);     if f ~= nil then cfg.web_auth = f end
 	save_autocfg(cfg)
 	return ok({ enabled = cfg.enabled, threshold = cfg.threshold,
-	            window = cfg.window, ttl = cfg.ttl })
+	            window = cfg.window, ttl = cfg.ttl,
+	            ssh_password = cfg.ssh_password, ssh_user = cfg.ssh_user,
+	            web_auth = cfg.web_auth })
 end
 
 function methods.block(mac, host, ip)
@@ -989,7 +1008,8 @@ if arg[1] == "list" then
 		scan        = {},
 		geoinfo     = { ip = "" },
 		autoget     = {},
-		autoset     = { enabled = "", threshold = "", window = "", ttl = "" },
+		autoset     = { enabled = "", threshold = "", window = "", ttl = "",
+		                ssh_password = "", ssh_user = "", web_auth = "" },
 	})
 	s2 = s2:gsub(':%[%]', ':{}')
 	io.write(s2)
@@ -1029,7 +1049,8 @@ elseif arg[1] == "call" then
 	elseif name == "autoget" then
 		res = methods.autoget()
 	elseif name == "autoset" then
-		res = methods.autoset(req.enabled, req.threshold, req.window, req.ttl)
+		res = methods.autoset(req.enabled, req.threshold, req.window, req.ttl,
+		                      req.ssh_password, req.ssh_user, req.web_auth)
 	else
 		reply({ success = false, error = "method not found: " .. tostring(name) })
 		os.exit(1)
