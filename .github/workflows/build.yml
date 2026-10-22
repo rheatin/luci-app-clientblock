@@ -29,7 +29,7 @@ jobs:
           - arch: x86_64
             sdk_arch: x86-64
           - arch: aarch64_cortex-a53
-            sdk_arch: aarch64-cortex-a53
+            sdk_arch: armsr-armv8
 
     steps:
       - name: Checkout
@@ -61,7 +61,7 @@ jobs:
           BASE="https://downloads.openwrt.org/releases/${REL}/targets"
           case "${{ matrix.arch }}" in
             x86_64) TARGET="x86/64"; SDKA="x86-64" ;;
-            aarch64_cortex-a53) TARGET="armsr/armv8"; SDKA="aarch64-cortex-a53" ;;
+            aarch64_cortex-a53) TARGET="armsr/armv8"; SDKA="armsr-armv8" ;;
           esac
           # exact name, no HTML scraping: the listing wraps names in quotes
           NAME="openwrt-sdk-${REL}-${SDKA}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
