@@ -113,8 +113,12 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p out
-          # only our package, and only the .apk form
-          find sdk/bin -type f -name 'luci-app-clientblock*.apk' -exec cp {} out/ \;
+          # only our package, and only the .apk form. The filename carries no
+          # arch (PKGARCH=all), so tag it or the two matrix jobs collide.
+          for f in $(find sdk/bin -type f -name 'luci-app-clientblock*.apk'); do
+            base=$(basename "$f" .apk)
+            cp "$f" "out/${base}_${{ matrix.arch }}.apk"
+          done
           if [ -z "$(ls -A out 2>/dev/null)" ]; then
             echo "ERROR: no .apk produced -- USE_APK may not be active in this SDK" >&2
             find sdk/bin -type f -name 'luci-app-clientblock*' -exec ls -lh {} \;
