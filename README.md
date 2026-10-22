@@ -56,8 +56,12 @@ sh install.sh --no-start    # 只装文件，不启动服务
 仅适用于 apk-based 系统（OpenWrt 24.10 及以上）。
 
 ```sh
-apk add --allow-untrusted luci-app-clientblock_1.0.0-1.apk
+# 下载对应架构的 .apk 后
+apk add --allow-untrusted ./luci-app-clientblock-1.0.0-r1.apk
 ```
+
+> 实际文件名带架构与版本后缀，例如 `luci-app-clientblock-1.0.0-r1.apk`。
+> 用 `apk add --allow-untrusted ./luci-app-clientblock*.apk` 也可以。
 
 `.apk` 由 GitHub Actions 用官方 OpenWrt SDK 构建，在 [Releases](../../releases) 页面按架构下载。
 
