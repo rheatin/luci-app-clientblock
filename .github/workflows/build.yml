@@ -58,15 +58,23 @@ jobs:
       - name: Download SDK
         run: |
           REL="${{ steps.ver.outputs.release }}"
-          SDK="openwrt-sdk-${REL}-${{ matrix.sdk_arch }}_gcc-*-musl.Linux-x86_64.tar.zst"
           BASE="https://downloads.openwrt.org/releases/${REL}/targets"
           case "${{ matrix.arch }}" in
-            x86_64) TARGET="x86/64" ;;
-            aarch64_cortex-a53) TARGET="armsr/armv8" ;;
+            x86_64) TARGET="x86/64"; SDKA="x86-64" ;;
+            aarch64_cortex-a53) TARGET="armsr/armv8"; SDKA="aarch64-cortex-a53" ;;
           esac
-          URL=$(curl -fsSL "${BASE}/${TARGET}/" | grep -oE "openwrt-sdk-${REL}-.*Linux-x86_64\.tar\.zst" | head -1)
+          # exact name, no HTML scraping: the listing wraps names in quotes
+          NAME="openwrt-sdk-${REL}-${SDKA}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          URL="${BASE}/${TARGET}/${NAME}"
           echo "SDK: $URL"
-          curl -fsSL "${BASE}/${TARGET}/${URL}" -o sdk.tar.zst
+          if ! curl -fsSL "$URL" -o sdk.tar.zst; then
+            # fall back to whatever gcc version this release shipped
+            NAME=$(curl -fsSL "${BASE}/${TARGET}/" \
+              | grep -oE "openwrt-sdk-${REL}-${SDKA}_gcc-[0-9.]+_musl\.Linux-x86_64\.tar\.zst" | head -1)
+            echo "fallback SDK: $NAME"
+            URL="${BASE}/${TARGET}/${NAME}"
+            curl -fsSL "$URL" -o sdk.tar.zst
+          fi
           mkdir -p sdk
           tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1 2>/dev/null || \
             (zstd -d sdk.tar.zst -o sdk.tar && tar -xf sdk.tar -C sdk --strip-components=1)
