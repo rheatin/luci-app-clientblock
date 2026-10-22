@@ -1,0 +1,8 @@
+*.apk
+*.ipk
+*.tar.gz
+*.tar.zst
+*.sha256
+/out/
+/dist/
+/sdk/

@@ -1,0 +1,736 @@
+'use strict';
+'require view';
+'require rpc';
+'require ui';
+'require poll';
+
+var callList = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'list',
+	params: ['probe']
+});
+
+var callBlock = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'block',
+	params: ['mac', 'host', 'ip']
+});
+
+var callUnblock = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'unblock',
+	params: ['mac']
+});
+
+var callUnblockAll = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'unblock_all'
+});
+
+var callIpList = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'iplist'
+});
+
+var callIpAdd = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'ipadd',
+	params: ['ip', 'note']
+});
+
+var callIpDel = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'ipdel',
+	params: ['ip']
+});
+
+var callAutoGet = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'autoget'
+});
+
+var callAutoSet = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'autoset',
+	params: ['enabled', 'threshold', 'window', 'ttl']
+});
+
+var callScan = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'scan'
+});
+
+var callIpFlush = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'ipflush'
+});
+
+var callRename = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'rename',
+	params: ['mac', 'name']
+});
+
+var STYLE = `
+.cb-wrap { width: 100%; }
+.cb-toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+.cb-toolbar input[type=text] { flex: 1 1 14rem; min-width: 10rem; padding: .4rem .6rem; }
+.cb-count { font-size: .875rem; opacity: .75; margin-left: auto; }
+.cb-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.cb-table th, .cb-table td { padding: .45rem .6rem; text-align: left; border-bottom: 1px solid rgba(128,128,128,.25); vertical-align: middle; }
+.cb-table th { font-weight: 600; opacity: .8; white-space: nowrap; }
+.cb-table tr.cb-blocked { background: rgba(239,68,68,.08); }
+.cb-table tr.cb-offline td { opacity: .55; }
+.cb-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; }
+.cb-badge { display: inline-block; padding: .1rem .45rem; border-radius: .6rem; font-size: .75rem; line-height: 1.4; }
+.cb-badge-on { background: rgba(34,197,94,.18); color: #16a34a; }
+.cb-badge-off { background: rgba(128,128,128,.18); opacity: .8; }
+.cb-badge-blocked { background: rgba(239,68,68,.18); color: #dc2626; }
+.cb-btn { padding: .28rem .7rem; border-radius: .35rem; border: 1px solid rgba(128,128,128,.45); background: transparent; cursor: pointer; font-size: .8rem; white-space: nowrap; }
+.cb-btn:hover { background: rgba(128,128,128,.12); }
+.cb-btn-danger { border-color: rgba(220,38,38,.6); color: #dc2626; }
+.cb-btn-danger:hover { background: rgba(220,38,38,.12); }
+.cb-btn-ok { border-color: rgba(22,163,74,.6); color: #16a34a; }
+.cb-btn-ok:hover { background: rgba(22,163,74,.12); }
+.cb-btn[disabled] { opacity: .45; cursor: default; }
+.cb-drop { font-size: .75rem; opacity: .7; white-space: nowrap; }
+.cb-empty { text-align: center; padding: 2rem 0; opacity: .6; }
+.cb-tabs { display: flex; gap: .25rem; border-bottom: 1px solid rgba(128,128,128,.3); margin-bottom: 1rem; }
+.cb-tab { padding: .5rem 1rem; cursor: pointer; border: 1px solid transparent; border-bottom: none;
+	border-radius: .35rem .35rem 0 0; background: transparent; color: inherit; font-size: .9rem; opacity: .65; margin-bottom: -1px; }
+.cb-tab:hover { opacity: .9; background: rgba(128,128,128,.08); }
+.cb-tab.active { opacity: 1; border-color: rgba(128,128,128,.3); background: rgba(128,128,128,.06); font-weight: 600; }
+.cb-pane { display: none; }
+.cb-pane.active { display: block; }
+.cb-ipform { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+.cb-ipform input[type=text] { padding: .4rem .6rem; }
+.cb-ipform input.cb-ip { flex: 0 0 16rem; font-family: ui-monospace, monospace; }
+.cb-ipform input.cb-note { flex: 1 1 12rem; min-width: 8rem; }
+.cb-fam { font-size: .72rem; opacity: .65; }
+.cb-auto { border: 1px solid rgba(128,128,128,.3); border-radius: .4rem; padding: .7rem .85rem; margin-bottom: 1rem; }
+.cb-auto-head { display: flex; align-items: center; gap: .6rem; font-weight: 600; margin-bottom: .5rem; }
+.cb-auto-body { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; font-size: .82rem; }
+.cb-auto-field { display: flex; align-items: center; gap: .35rem; }
+.cb-auto-field input { width: 5.5rem; padding: .25rem .4rem; }
+.cb-auto-hint { font-size: .75rem; opacity: .65; margin-top: .45rem; }
+.cb-src { font-size: .7rem; padding: .05rem .35rem; border-radius: .5rem; background: rgba(128,128,128,.18); opacity: .85; }
+.cb-src-auto { background: rgba(239,68,68,.16); color: #dc2626; }
+.cb-src-watchdog { background: rgba(59,130,246,.16); color: #2563eb; }
+`;
+
+function fmtBytes(n) {
+	if (!n) return '0';
+	var u = [ 'B', 'KB', 'MB', 'GB', 'TB' ], i = 0;
+	while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+	return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+}
+
+function fmtGeo(geo) {
+	if (!geo) return '';
+	var p = String(geo).split('|');
+	var parts = [];
+	var seen = {};
+	for (var i = 0; i < 4; i++) {
+		var v = (p[i] || '').trim();
+		if (!v || v === '0' || v === 'Reserved' || v === 'reserved') continue;
+		if (seen[v]) continue;
+		seen[v] = 1;
+		parts.push(v);
+	}
+	var cc = (p[4] || '').trim();
+	if (cc && cc !== '0') parts.push(cc);
+	return parts.join(' · ');
+}
+
+function fmtTime(ts) {
+	if (!ts) return '';
+	var d = new Date(ts * 1000);
+	function p(x) { return (x < 10 ? '0' : '') + x; }
+	return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+		' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+return view.extend({
+	load: function () {
+		return Promise.all([ callList('1'), callIpList(), callAutoGet() ]).then(function (r) {
+			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {};
+			dev.ips = ips.ips || [];
+			dev.ip_count = ips.count || 0;
+			dev.auto = auto;
+			return dev;
+		});
+	},
+
+	handleBlock: function (dev, ev) {
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		btn.textContent = _('Blocking…');
+		return callBlock(dev.mac, dev.host || '', dev.ip || '').then(function (res) {
+			if (!res || res.success === false)
+				throw new Error((res && res.error) || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Blocked') + ' ' + (dev.host || dev.mac)), 'info');
+			return this.refresh();
+		}.bind(this)).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return this.refresh();
+		}.bind(this));
+	},
+
+	handleUnblock: function (dev, ev) {
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		btn.textContent = _('Unblocking…');
+		return callUnblock(dev.mac).then(function (res) {
+			if (!res || res.success === false)
+				throw new Error((res && res.error) || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Unblocked') + ' ' + (dev.host || dev.mac)), 'info');
+			return this.refresh();
+		}.bind(this)).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return this.refresh();
+		}.bind(this));
+	},
+
+	handleUnblockAll: function (ev) {
+		if (!confirm(_('Unblock all devices?')))
+			return;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callUnblockAll().then(function () {
+			ui.addNotification(null, E('p', {}, _('All devices unblocked')), 'info');
+			return this.refresh();
+		}.bind(this)).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return this.refresh();
+		}.bind(this));
+	},
+
+	handleRename: function (dev) {
+		var self = this;
+		var name = prompt(_('Device name'), dev.host || '');
+		if (name === null) return;
+		return callRename(dev.mac, name).then(function (res) {
+			if (res && res.success === false)
+				throw new Error(res.error || _('Failed'));
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return self.refresh();
+		});
+	},
+
+	handleProbe: function (ev) {
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		btn.textContent = _('Scanning…');
+		return callList('1').then(function (res) {
+			this.devices = (res && res.devices) || [];
+			this.blockedCount = (res && res.blocked_count) || 0;
+			this.renderTable();
+		}.bind(this)).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () {
+			btn.disabled = false;
+			btn.textContent = _('Rescan devices');
+		});
+	},
+
+	refresh: function () {
+		var self = this;
+		return callList('1').then(function (res) {
+			self.devices = (res && res.devices) || [];
+			self.blockedCount = (res && res.blocked_count) || 0;
+			self.renderTable();
+		}).catch(function () {}).then(function () {
+			self.renderTable();
+		});
+	},
+
+	filterRows: function () {
+		var q = (this.query || '').toLowerCase().trim();
+		if (!q) return this.devices;
+		return this.devices.filter(function (d) {
+			return (d.host || '').toLowerCase().indexOf(q) !== -1 ||
+				(d.ip || '').indexOf(q) !== -1 ||
+				(d.mac || '').toLowerCase().indexOf(q) !== -1;
+		});
+	},
+
+	refreshAuto: function () {
+		var self = this;
+		return callAutoGet().then(function (res) {
+			self.auto = res || {};
+			self.renderAuto();
+		}).catch(function () {});
+	},
+
+	handleAutoToggle: function (ev) {
+		var self = this;
+		var on = ev.target.checked;
+		return callAutoSet(on, this.auto.threshold, this.auto.window, this.auto.ttl)
+			.then(function (res) {
+				self.auto = res || self.auto;
+				ui.addNotification(null, E('p', {},
+					on ? _('Automatic blocking enabled') : _('Automatic blocking disabled')), 'info');
+			}).catch(function (e) {
+				ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			});
+	},
+
+	handleAutoSave: function (ev) {
+		var self = this;
+		var t = document.getElementById('cb-auto-threshold');
+		var w = document.getElementById('cb-auto-window');
+		var l = document.getElementById('cb-auto-ttl');
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callAutoSet(this.auto.enabled, t ? t.value : '', w ? w.value : '', l ? l.value : '')
+			.then(function (res) {
+				if (res && res.success === false) throw new Error(res.error || _('Failed'));
+				self.auto = res || self.auto;
+				self.renderAuto();
+				ui.addNotification(null, E('p', {}, _('Settings saved')), 'info');
+			}).catch(function (e) {
+				ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			}).finally(function () {
+				btn.disabled = false;
+			});
+	},
+
+	handleScanNow: function (ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callScan().then(function (res) {
+			var banned = (res && res.banned) || [];
+			ui.addNotification(null, E('p', {}, banned.length
+				? _('Blocked') + ' ' + banned.length + ': ' + banned.join(', ')
+				: _('No new offenders')), 'info');
+			return self.refreshIps();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () {
+			btn.disabled = false;
+		});
+	},
+
+	renderAuto: function () {
+		var box = document.getElementById('cb-auto-body');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+
+		var a = this.auto || {};
+		var self = this;
+
+		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
+			E('input', {
+				'type': 'checkbox',
+				'checked': a.enabled ? 'checked' : null,
+				'change': function (ev) { self.handleAutoToggle(ev); }
+			}),
+			E('span', {}, _('Enable'))
+		]));
+
+		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
+			E('span', {}, _('Threshold')),
+			E('input', {
+				'type': 'number', 'id': 'cb-auto-threshold', 'min': '1', 'max': '100',
+				'value': a.threshold || 5
+			}),
+			E('span', { 'style': 'opacity:.7' }, _('failures'))
+		]));
+
+		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
+			E('span', {}, _('Within')),
+			E('input', {
+				'type': 'number', 'id': 'cb-auto-window', 'min': '60', 'max': '86400',
+				'value': a.window || 600
+			}),
+			E('span', { 'style': 'opacity:.7' }, _('seconds'))
+		]));
+
+		box.appendChild(E('label', { 'class': 'cb-auto-field' }, [
+			E('span', {}, _('Expire after')),
+			E('input', {
+				'type': 'number', 'id': 'cb-auto-ttl', 'min': '0', 'max': '2592000',
+				'value': a.ttl === 0 ? 0 : (a.ttl || 86400)
+			}),
+			E('span', { 'style': 'opacity:.7' }, _('seconds (0 = never)'))
+		]));
+
+		box.appendChild(E('button', {
+			'class': 'cb-btn', 'click': function (ev) { self.handleAutoSave(ev); }
+		}, _('Save')));
+
+		box.appendChild(E('button', {
+			'class': 'cb-btn', 'click': function (ev) { self.handleScanNow(ev); }
+		}, _('Scan now')));
+	},
+
+	refreshIps: function () {
+		var self = this;
+		return callIpList().then(function (res) {
+			self.ips = (res && res.ips) || [];
+			self.ipCount = (res && res.count) || 0;
+			self.renderIps();
+		}).catch(function () {
+			self.renderIps();
+		});
+	},
+
+	handleIpAdd: function (ev) {
+		var self = this;
+		var ipEl = document.getElementById('cb-ip-input');
+		var noteEl = document.getElementById('cb-ip-note');
+		if (!ipEl) return;
+		var ip = (ipEl.value || '').trim();
+		if (!ip) {
+			ipEl.focus();
+			return;
+		}
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callIpAdd(ip, (noteEl && noteEl.value) || '').then(function (res) {
+			if (res && res.success === false)
+				throw new Error(res.error || _('Failed'));
+			ipEl.value = '';
+			if (noteEl) noteEl.value = '';
+			return self.refreshIps();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () {
+			btn.disabled = false;
+		});
+	},
+
+	handleIpDel: function (ip, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callIpDel(ip).then(function (res) {
+			if (res && res.success === false)
+				throw new Error(res.error || _('Failed'));
+			return self.refreshIps();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return self.refreshIps();
+		});
+	},
+
+	handleIpFlush: function (ev) {
+		var self = this;
+		if (!confirm(_('Remove all blocked IPs?')))
+			return;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callIpFlush().then(function () {
+			return self.refreshIps();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			return self.refreshIps();
+		});
+	},
+
+	renderIps: function () {
+		var tbody = document.getElementById('cb-ip-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var list = this.ips || [];
+		var self = this;
+		var q = (this.ipQuery || '').toLowerCase().trim();
+		if (q)
+			list = list.filter(function (r) {
+				return (r.ip || '').toLowerCase().indexOf(q) !== -1 ||
+					(r.note || '').toLowerCase().indexOf(q) !== -1;
+			});
+
+		if (!list.length) {
+			var emptyCell = E('td', { 'colspan': 6, 'class': 'cb-empty' });
+			if (q) {
+				emptyCell.appendChild(document.createTextNode(_('No entries match the filter')));
+			} else {
+				emptyCell.appendChild(E('div', { 'style': 'font-weight:600;margin-bottom:.35rem' },
+					_('No blocked IPs yet')));
+				emptyCell.appendChild(E('div', {},
+					_('Type an address above and press Block IP. Single addresses and CIDR ranges both work.')));
+				emptyCell.appendChild(E('div', { 'style': 'margin-top:.9rem' },
+					E('button', {
+						'style': 'font-size:.78rem;padding:.15rem .5rem;opacity:.55;cursor:pointer;background:none;border:none;color:inherit;text-decoration:underline',
+						'click': function () {
+							var el = document.getElementById('cb-ip-input');
+							if (el) el.focus();
+						}
+					}, _('Jump to the input field'))));
+			}
+			tbody.appendChild(E('tr', {}, emptyCell));
+		}
+
+		list.forEach(function (r) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'style': 'white-space:nowrap' }, [
+					r.ip,
+					' ',
+					E('span', { 'class': 'cb-fam' }, '(IPv' + (r.family === 'ipv6' ? '6' : '4') + ')')
+				].concat(
+					r.source === 'auto'
+						? [ ' ', E('span', { 'class': 'cb-src cb-src-auto' }, 'auto') ]
+						: (r.source === 'watchdog'
+							? [ ' ', E('span', { 'class': 'cb-src cb-src-watchdog' }, 'imported') ]
+							: [])
+				)),
+				E('td', { 'style': 'font-size:.8rem;opacity:.85' }, fmtGeo(r.geo) || E('span', { 'class': 'cb-drop' }, '-')),
+				E('td', {}, r.note || ''),
+				E('td', { 'class': 'cb-drop' }, (r.drop_packets || 0) + ' pkt / ' + fmtBytes(r.drop_bytes)),
+				E('td', { 'class': 'cb-drop' }, fmtTime(r.since)),
+				E('td', { 'style': 'text-align:right' },
+					E('button', {
+						'class': 'cb-btn cb-btn-ok',
+						'click': function (ev) { self.handleIpDel(r.ip, ev); }
+					}, _('Unblock')))
+			]));
+		});
+
+		var cnt = document.getElementById('cb-ip-count');
+		if (cnt)
+			cnt.textContent = (this.ipCount || 0) + ' ' + _('blocked');
+	},
+
+	switchTab: function (name) {
+		this.tab = name;
+		['devices', 'ips'].forEach(function (t) {
+			var pane = document.getElementById('cb-pane-' + t);
+			var btn = document.getElementById('cb-tab-' + t);
+			if (pane) pane.classList.toggle('active', t === name);
+			if (btn) btn.classList.toggle('active', t === name);
+		});
+		if (name === 'ips') return this.refreshIps();
+	},
+
+	renderTable: function () {
+		var tbody = document.getElementById('cb-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var rows = this.filterRows() || [];
+		var self = this;
+
+		if (!rows.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+				_('No devices match the filter'))));
+		}
+
+		rows.forEach(function (d) {
+			var stateBadge = d.blocked
+				? E('span', { 'class': 'cb-badge cb-badge-blocked' }, _('Blocked'))
+				: (d.online
+					? E('span', { 'class': 'cb-badge cb-badge-on' }, _('Online'))
+					: E('span', { 'class': 'cb-badge cb-badge-off' }, _('Offline')));
+
+			var action;
+			if (d.blocked) {
+				action = E('button', {
+					'class': 'cb-btn cb-btn-ok',
+					'click': function (ev) { self.handleUnblock(d, ev); }
+				}, _('Unblock'));
+			} else {
+				action = E('button', {
+					'class': 'cb-btn cb-btn-danger',
+					'click': function (ev) { self.handleBlock(d, ev); }
+				}, _('Block'));
+			}
+
+			var dropText = d.blocked
+				? E('span', { 'class': 'cb-drop' },
+					(d.drop_packets || 0) + ' pkt / ' + fmtBytes(d.drop_bytes))
+				: '';
+
+			var nameCell = d.blocked
+				? E('a', {
+					'href': '#',
+					'title': _('Rename'),
+					'style': 'color:inherit;text-decoration:none;border-bottom:1px dotted currentColor',
+					'click': function (ev) {
+						ev.preventDefault();
+						self.handleRename(d);
+					}
+				}, d.host || _('(unnamed)'))
+				: (d.host || E('span', { 'class': 'cb-mono' }, _('(unnamed)')));
+
+			tbody.appendChild(E('tr', { 'class': d.blocked ? 'cb-blocked' : (d.online ? '' : 'cb-offline') }, [
+				E('td', {}, stateBadge),
+				E('td', {}, nameCell),
+				E('td', { 'class': 'cb-mono' }, d.ip || '-'),
+				E('td', { 'class': 'cb-mono' }, d.mac),
+				E('td', {}, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
+				E('td', { 'style': 'text-align:right' }, action)
+			]));
+		});
+
+		var cnt = document.getElementById('cb-count');
+		if (cnt)
+			cnt.textContent = (this.devices || []).length + ' ' + _('devices') + ', ' +
+				(this.blockedCount || 0) + ' ' + _('blocked');
+	},
+
+	render: function (data) {
+		this.devices = (data && data.devices) || [];
+		this.blockedCount = (data && data.blocked_count) || 0;
+		this.ips = (data && data.ips) || [];
+		this.ipCount = (data && data.ip_count) || 0;
+		this.auto = (data && data.auto) || {};
+		this.query = '';
+		this.ipQuery = '';
+		this.tab = 'devices';
+		var self = this;
+
+		var search = E('input', {
+			'type': 'text',
+			'placeholder': _('Filter by name, IP or MAC'),
+			'value': this.query || '',
+			'input': function (ev) {
+				self.query = ev.target.value;
+				self.renderTable();
+			}
+		});
+
+		var rescanBtn = E('button', { 'class': 'cb-btn', 'click': function (ev) { self.handleProbe(ev); } },
+			_('Rescan devices'));
+		var unblockAllBtn = E('button', { 'class': 'cb-btn', 'click': function (ev) { self.handleUnblockAll(ev); } },
+			_('Unblock all'));
+
+		var ipSearch = E('input', {
+			'type': 'text',
+			'placeholder': _('Filter by IP or note'),
+			'input': function (ev) {
+				self.ipQuery = ev.target.value;
+				self.renderIps();
+			}
+		});
+
+		var ipInput = E('input', {
+			'type': 'text',
+			'class': 'cb-ip',
+			'id': 'cb-ip-input',
+			'placeholder': '1.2.3.4  /  1.2.3.0/24  /  2001:db8::1',
+			'keydown': function (ev) { if (ev.key === 'Enter') self.handleIpAdd(ev); }
+		});
+		var ipNote = E('input', {
+			'type': 'text',
+			'class': 'cb-note',
+			'id': 'cb-ip-note',
+			'placeholder': _('Note (optional)'),
+			'keydown': function (ev) { if (ev.key === 'Enter') self.handleIpAdd(ev); }
+		});
+
+		var tabBtn = function (name, label) {
+			return E('button', {
+				'class': 'cb-tab' + (name === 'devices' ? ' active' : ''),
+				'id': 'cb-tab-' + name,
+				'click': function () { self.switchTab(name); }
+			}, label);
+		};
+
+		var devicesPane = E('div', {
+			'class': 'cb-pane active',
+			'id': 'cb-pane-devices'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Blocked devices lose all traffic through this router: Internet, DNS, DHCP and gateway services. Their packets are dropped at every interface.')),
+			E('div', { 'class': 'cb-toolbar' }, [
+				search,
+				rescanBtn,
+				unblockAllBtn,
+				E('span', { 'class': 'cb-count', 'id': 'cb-count' }, '')
+			]),
+			E('table', { 'class': 'cb-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('Status')),
+					E('th', {}, _('Name')),
+					E('th', {}, _('IP')),
+					E('th', {}, _('MAC')),
+					E('th', {}, _('Dropped')),
+					E('th', { 'style': 'text-align:right' }, _('Action'))
+				])),
+				E('tbody', { 'id': 'cb-tbody' })
+			])
+		]);
+
+		var ipsPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-ips'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Blocked addresses cannot be reached from your LAN, and cannot reach it. Both directions are dropped. CIDR ranges are supported.')),
+			E('div', { 'class': 'cb-auto' }, [
+				E('div', { 'class': 'cb-auto-head' }, _('Automatic protection')),
+				E('div', { 'class': 'cb-auto-body', 'id': 'cb-auto-body' }),
+				E('div', { 'class': 'cb-auto-hint' },
+					_('Sources that fail to log in repeatedly (SSH or LuCI) are blocked automatically. Checks run every minute.'))
+			]),
+			E('div', { 'style': 'display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.6rem' }, [
+				E('span', { 'style': 'font-size:.8rem;opacity:.6;align-self:center' }, _('Quick fill:')),
+				E('button', {
+					'class': 'cb-btn', 'style': 'font-size:.75rem;padding:.15rem .5rem',
+					'click': function () { document.getElementById('cb-ip-input').value = '1.1.1.1'; }
+				}, '1.1.1.1'),
+				E('button', {
+					'class': 'cb-btn', 'style': 'font-size:.75rem;padding:.15rem .5rem',
+					'click': function () { document.getElementById('cb-ip-input').value = '8.8.8.8'; }
+				}, '8.8.8.8'),
+				E('button', {
+					'class': 'cb-btn', 'style': 'font-size:.75rem;padding:.15rem .5rem',
+					'click': function () { document.getElementById('cb-ip-input').value = '1.2.3.0/24'; document.getElementById('cb-ip-input').focus(); }
+				}, '1.2.3.0/24')
+			]),
+			E('div', { 'class': 'cb-ipform' }, [
+				ipInput,
+				ipNote,
+				E('button', { 'class': 'cb-btn', 'click': function (ev) { self.handleIpAdd(ev); } }, _('Block IP')),
+				E('button', { 'class': 'cb-btn cb-btn-danger', 'click': function (ev) { self.handleIpFlush(ev); } }, _('Unblock all'))
+			]),
+			E('div', { 'class': 'cb-toolbar' }, [
+				ipSearch,
+				E('span', { 'class': 'cb-count', 'id': 'cb-ip-count' }, '')
+			]),
+			E('table', { 'class': 'cb-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('Address')),
+					E('th', {}, _('Region')),
+					E('th', {}, _('Note')),
+					E('th', {}, _('Dropped')),
+					E('th', {}, _('Since')),
+					E('th', { 'style': 'text-align:right' }, _('Action'))
+				])),
+				E('tbody', { 'id': 'cb-ip-tbody' })
+			])
+		]);
+
+		var root = E('div', { 'class': 'cb-wrap' }, [
+			E('style', {}, STYLE),
+			E('h2', {}, _('Client Access Control')),
+			E('div', { 'class': 'cb-tabs' }, [
+				tabBtn('devices', _('Devices')),
+				tabBtn('ips', _('External IPs'))
+			]),
+			devicesPane,
+			ipsPane
+		]);
+
+		window.setTimeout(function () {
+			self.renderTable();
+			self.renderAuto();
+		}, 0);
+
+		poll.add(function () {
+			if (self.tab === 'ips') return self.refreshIps();
+			return self.refresh();
+		}, 30);
+
+		return root;
+	},
+
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null
+});

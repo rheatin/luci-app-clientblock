@@ -1,0 +1,51 @@
+name: Release shell installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: echo "pkg=$(sed -n 's/^PKG_VERSION:=//p' Makefile)" >> "$GITHUB_OUTPUT"
+
+      - name: Build install bundle
+        run: |
+          set -e
+          PKG="${{ steps.v.outputs.pkg }}"
+          STAGE="luci-app-clientblock-${PKG}"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp -r root "$STAGE"/
+          mkdir -p "$STAGE/root/www/luci-static/resources/view"
+          cp htdocs/luci-static/resources/view/clientblock.js \
+             "$STAGE/root/www/luci-static/resources/view/"
+          cp install.sh uninstall.sh README.md LICENSE "$STAGE"/
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+          sha256sum "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          ls -lh "${STAGE}".tar.gz*
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-installer
+          path: |
+            luci-app-clientblock-*.tar.gz
+            luci-app-clientblock-*.tar.gz.sha256
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            luci-app-clientblock-*.tar.gz
+            luci-app-clientblock-*.tar.gz.sha256

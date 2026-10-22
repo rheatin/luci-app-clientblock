@@ -1,0 +1,72 @@
+#!/bin/sh
+# Login-attack watcher: streams the syslog and blocks repeat offenders as they
+# appear, instead of polling once a minute. Replaces cron-based scanning.
+
+CONFIG=/etc/clientblock/auto.json
+LOG_TAG=clientblock-watch
+
+enabled() {
+	[ -f "$CONFIG" ] || return 0
+	# auto.json is flat JSON; a missing "enabled" or "enabled":true means on
+	grep -q '"enabled":false' "$CONFIG" && return 1
+	return 0
+}
+
+threshold() {
+	local t=5
+	[ -f "$CONFIG" ] && t=$(sed -n 's/.*"threshold":\([0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null)
+	[ -n "$t" ] || t=5
+	echo "$t"
+}
+
+count_ip() {
+	# $1 = ip, $2 = threshold
+	local ip=$1 th=$2 now cnt
+	now=$(date +%s)
+	local buf=/tmp/clientblock-hits
+	touch "$buf"
+
+	# drop entries older than the counting window (default 600s)
+	local window=600
+	[ -f "$CONFIG" ] && window=$(sed -n 's/.*"window":\([0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null)
+	[ -n "$window" ] || window=600
+	local cutoff=$((now - window))
+	awk -v c="$cutoff" '$1 >= c' "$buf" > "$buf.tmp" 2>/dev/null && mv "$buf.tmp" "$buf"
+
+	echo "$now $ip" >> "$buf"
+	cnt=$(grep -c " $ip\$" "$buf" 2>/dev/null)
+	[ -n "$cnt" ] || cnt=0
+
+	if [ "$cnt" -ge "$th" ]; then
+		if ubus call luci.clientblock ipadd \
+			"{\"ip\":\"$ip\",\"note\":\"auto: $cnt failed logins\",\"source\":\"auto\",\"fast\":\"1\"}" \
+			>/dev/null 2>&1; then
+			logger -t "$LOG_TAG" "blocked $ip after $cnt failed logins"
+			# reset the counter so the same burst does not re-trigger
+			grep -v " $ip\$" "$buf" > "$buf.tmp" 2>/dev/null && mv "$buf.tmp" "$buf"
+		fi
+	fi
+}
+
+main() {
+	enabled || { logger -t "$LOG_TAG" "disabled, exiting"; exit 0; }
+	local th
+	th=$(threshold)
+	logger -t "$LOG_TAG" "started (threshold=$th)"
+
+	# -f follows the ubus log stream. Each line is matched for auth failures;
+	# the match is deliberately narrow so normal traffic costs nothing.
+	logread -f 2>/dev/null |
+	while IFS= read -r line; do
+		case "$line" in
+			*"Bad password attempt"*|*"Login attempt for nonexistent user"*|*"Max auth tries reached"*|*"failed login"*) ;;
+			*) continue ;;
+		esac
+		ip=$(printf '%s\n' "$line" | sed -n 's/.*from <\([0-9.]*\):[0-9]*>.*/\1/p')
+		[ -n "$ip" ] || ip=$(printf '%s\n' "$line" | sed -n 's/.*from \([0-9.]*\):.*/\1/p')
+		[ -n "$ip" ] || ip=$(printf '%s\n' "$line" | sed -n 's/.*from \([0-9.]*\)$/\1/p')
+		[ -n "$ip" ] && count_ip "$ip" "$th"
+	done
+}
+
+main
