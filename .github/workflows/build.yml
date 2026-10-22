@@ -80,6 +80,13 @@ jobs:
             (zstd -d sdk.tar.zst -o sdk.tar && tar -xf sdk.tar -C sdk --strip-components=1)
           ls sdk | head
 
+      - name: Install LuCI feed
+        run: |
+          cd sdk
+          # the SDK ships without feeds; luci.mk comes from the luci feed
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Prepare package feed
         run: |
           mkdir -p sdk/package/clientblock
