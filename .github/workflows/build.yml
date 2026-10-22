@@ -9,7 +9,7 @@ on:
       openwrt_version:
         description: 'OpenWrt release to build against'
         required: true
-        default: '24.10.4'
+        default: '25.12.0'
       use_apk:
         description: 'Build .apk (OpenWrt 24.10+ apk-based images)'
         type: boolean
@@ -41,7 +41,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "release=${{ inputs.openwrt_version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "release=24.10.4" >> "$GITHUB_OUTPUT"
+            echo "release=25.12.0" >> "$GITHUB_OUTPUT"
           fi
           echo "pkg=$(sed -n 's/^PKG_VERSION:=//p' Makefile)" >> "$GITHUB_OUTPUT"
           echo "rel=$(sed -n 's/^PKG_RELEASE:=//p' Makefile)" >> "$GITHUB_OUTPUT"
@@ -64,7 +64,7 @@ jobs:
             aarch64_cortex-a53) TARGET="armsr/armv8"; SDKA="armsr-armv8" ;;
           esac
           # exact name, no HTML scraping: the listing wraps names in quotes
-          NAME="openwrt-sdk-${REL}-${SDKA}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          NAME="openwrt-sdk-${REL}-${SDKA}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
           URL="${BASE}/${TARGET}/${NAME}"
           echo "SDK: $URL"
           if ! curl -fsSL "$URL" -o sdk.tar.zst; then
@@ -99,7 +99,11 @@ jobs:
           # apk packaging is selected by CONFIG_USE_APK in 24.10+
           printf 'CONFIG_USE_APK=y\n' >> .config
           make defconfig
-          grep -E '^CONFIG_USE_APK' .config || echo "WARN: USE_APK not available in this SDK"
+          grep -E '^CONFIG_USE_APK=y' .config || {
+            echo "ERROR: this SDK cannot emit .apk (CONFIG_USE_APK unavailable)." >&2
+            echo "Use OpenWrt 25.12+ which defaults to apk." >&2
+            exit 1
+          }
 
       - name: Build package
         run: |
@@ -109,8 +113,13 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p out
-          find sdk/bin -type f \( -name '*.apk' -o -name '*.ipk' \) \
-            -exec cp {} out/ \;
+          # only our package, and only the .apk form
+          find sdk/bin -type f -name 'luci-app-clientblock*.apk' -exec cp {} out/ \;
+          if [ -z "$(ls -A out 2>/dev/null)" ]; then
+            echo "ERROR: no .apk produced -- USE_APK may not be active in this SDK" >&2
+            find sdk/bin -type f -name 'luci-app-clientblock*' -exec ls -lh {} \;
+            exit 1
+          fi
           ls -lh out/
 
       - name: Upload build artifacts
