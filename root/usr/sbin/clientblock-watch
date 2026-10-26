@@ -5,7 +5,6 @@
 CONFIG=/etc/clientblock/auto.json
 LOG_TAG=clientblock-watch
 LOCK=/var/run/clientblock-watch.lock
-SEEN=/tmp/clientblock-seen
 
 enabled() {
 	[ -f "$CONFIG" ] || return 0
@@ -76,17 +75,9 @@ count_ip() {
 main() {
 	# Single instance. procd keeps fd 9 across respawn, so flock alone reports a
 	# phantom holder; a pidfile with a liveness check is reliable here.
-	# Take over from any leftover instance. Only touch pids of real
-	# clientblock-watch processes that are not our parent (procd).
-	MYPPID=$(awk '{print $4}' "/proc/$$/stat" 2>/dev/null)
-	for _p in $(ps w 2>/dev/null | grep "[c]lientblock-watch" | awk '{print $1}'); do
-		[ "$_p" = "$$" ] && continue
-		[ "$_p" = "$MYPPID" ] && continue
-		# skip anything that is not our own script path
-		grep -q "clientblock-watch" "/proc/$_p/cmdline" 2>/dev/null && kill -9 "$_p" 2>/dev/null
-	done
-
 	PIDFILE=/var/run/clientblock-watch.pid
+
+	# A live instance wins: never kill a working watcher just because we started.
 	if [ -f "$PIDFILE" ]; then
 		OLD=$(cat "$PIDFILE" 2>/dev/null)
 		if [ -n "$OLD" ] && [ "$OLD" != "$$" ] && kill -0 "$OLD" 2>/dev/null; then
@@ -94,36 +85,41 @@ main() {
 			exit 0
 		fi
 	fi
+
+	# No live instance: clear leftovers from a previous run. These are shells
+	# whose `logread -f` child died, so they hold the pidfile but do nothing.
+	MYPPID=$(awk '{print $4}' "/proc/$$/stat" 2>/dev/null)
+	for _p in $(ps w 2>/dev/null | grep "[c]lientblock-watch" | awk '{print $1}'); do
+		[ "$_p" = "$$" ] && continue
+		[ "$_p" = "$MYPPID" ] && continue
+		grep -q "clientblock-watch" "/proc/$_p/cmdline" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+	done
+
 	echo $$ > "$PIDFILE"
-	trap 'rm -f "$PIDFILE"' EXIT INT TERM
+
+	# Reap `logread -f` children orphaned by previously killed watchers. They
+	# are reparented to init and would otherwise accumulate forever.
+	for _p in $(ps w 2>/dev/null | grep "[l]ogread -f" | awk '{print $1}'); do
+		_pp=$(awk '{print $4}' "/proc/$_p/stat" 2>/dev/null)
+		[ "$_pp" = "1" ] && kill -9 "$_p" 2>/dev/null
+	done
+
+	# Take the logread child down with us on exit.
+	trap 'rm -f "$PIDFILE"; for _c in $(ps w 2>/dev/null | grep "[l]ogread -f" | awk "{print \$1}"); do _pp=$(awk "{print \$4}" "/proc/$_c/stat" 2>/dev/null); [ "$_pp" = "$$" ] && kill -9 "$_c" 2>/dev/null; done' EXIT INT TERM
 
 	enabled || { logger -t "$LOG_TAG" "disabled, exiting"; exit 0; }
 	local th
 	th=$(threshold)
-	START_HMS=$(date +%H:%M:%S)
 	logger -t "$LOG_TAG" "started (threshold=$th)"
 
-	# logread -f replays the recent buffer on start; seed the fingerprint set
-	# with what is already buffered so a restart does not re-record history.
-	if [ ! -f "$SEEN" ]; then
-		: > "$SEEN"
-		logread 2>/dev/null | tail -n 300 | while IFS= read -r l; do
-			printf '%s\n' "$l" | cksum | cut -d' ' -f1
-		done >> "$SEEN" 2>/dev/null || true
-	fi
+	# logread -f emits only lines that arrive after it starts (verified: it
+	# does not replay the ring buffer), so no replay guard is needed.
 
 	# -f follows the ubus log stream. Each line is matched for auth failures;
 	# the match is deliberately narrow so normal traffic costs nothing.
 	logread -f 2>/dev/null |
 	while IFS= read -r line; do
 		ts=$(date +%s)
-
-		# logread -f re-emits its buffer on start. Each record carries its own
-		# "MMM DD HH:MM:SS"; compare it against the start second as text.
-		lhm=$(printf '%s\n' "$line" | sed -n 's/^[A-Z][a-z][a-z] [A-Z][a-z][a-z] *[0-9][0-9]* \([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\).*/\1/p')
-		if [ -n "$lhm" ] && [ -n "$START_HMS" ]; then
-			[ "$lhm" \< "$START_HMS" ] && continue
-		fi
 
 		# ---- SSH: success ----
 		if printf '%s' "$line" | grep -q "auth succeeded for"; then
@@ -178,7 +174,8 @@ main() {
 
 		log_event "$kind" failure "$ip" "$user" "$detail"
 		enabled_kind "$kind" || continue
-		count_ip "$ip" "$th" "$kind"
+		# re-read on every event: the panel can change it without a restart
+		count_ip "$ip" "$(threshold)" "$kind"
 	done
 }
 
