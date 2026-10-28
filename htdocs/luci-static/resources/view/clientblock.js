@@ -44,6 +44,14 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callNotifyGet = rpc.declare({ object: 'luci.clientblock', method: 'notifyget' });
+var callNotifyAdd = rpc.declare({ object: 'luci.clientblock', method: 'notifyadd',
+	params: ['type_', 'name', 'url', 'token', 'chat'] });
+var callNotifyDel = rpc.declare({ object: 'luci.clientblock', method: 'notifydel', params: ['id'] });
+var callNotifyToggle = rpc.declare({ object: 'luci.clientblock', method: 'notifytoggle', params: ['id', 'enabled'] });
+var callNotifyEvents = rpc.declare({ object: 'luci.clientblock', method: 'notifyevents', params: ['events'] });
+var callNotifyTest = rpc.declare({ object: 'luci.clientblock', method: 'notifytest', params: ['id'] });
+
 var callSchedList = rpc.declare({
 	object: 'luci.clientblock',
 	method: 'schedlist'
@@ -435,6 +443,118 @@ return view.extend({
 				(d.ip || '').indexOf(q) !== -1 ||
 				(d.mac || '').toLowerCase().indexOf(q) !== -1;
 		});
+	},
+
+	refreshNotify: function () {
+		var self = this;
+		return callNotifyGet().then(function (res) {
+			self.notify = res || {};
+			self.renderNotify();
+		}).catch(function () { self.renderNotify(); });
+	},
+
+	handleNotifyAdd: function (ev) {
+		var self = this;
+		var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+		var type = g('cb-nt-type');
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callNotifyAdd(type, g('cb-nt-name'), g('cb-nt-url'), g('cb-nt-token'), g('cb-nt-chat'))
+			.then(function (res) {
+				if (res && res.success === false) throw new Error(res.error || _('Failed'));
+				return self.refreshNotify();
+			}).catch(function (e) {
+				ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			}).finally(function () { btn.disabled = false; });
+	},
+
+	handleNotifyDel: function (id, ev) {
+		var self = this;
+		ev.currentTarget.disabled = true;
+		return callNotifyDel(id).then(function () { return self.refreshNotify(); })
+			.catch(function (e) { ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error'); });
+	},
+
+	handleNotifyToggle: function (ch, ev) {
+		var self = this;
+		return callNotifyToggle(ch.id, ch.enabled ? '0' : '1')
+			.then(function () { return self.refreshNotify(); });
+	},
+
+	handleNotifyTest: function (ch, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callNotifyTest(ch.id).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Send failed'));
+			ui.addNotification(null, E('p', {}, _('Test message sent')), 'info');
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleNotifyEvents: function (ev) {
+		var self = this;
+		var picked = [];
+		document.querySelectorAll('#cb-nt-events .cb-dchip.on').forEach(function (d) {
+			picked.push(d.getAttribute('data-event'));
+		});
+		return callNotifyEvents(picked.join(',')).then(function () {
+			ui.addNotification(null, E('p', {}, _('Saved')), 'info');
+			return self.refreshNotify();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		});
+	},
+
+	renderNotify: function () {
+		var tbody = document.getElementById('cb-nt-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var self = this;
+		var n = this.notify || {};
+		var list = n.channels || [];
+
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
+				_('No notification channels yet'))));
+		}
+
+		list.forEach(function (c) {
+			var target = c.type === 'telegram'
+				? ('chat ' + (c.chat || '?'))
+				: (c.url || '');
+			tbody.appendChild(E('tr', {}, [
+				E('td', {}, E('span', { 'class': 'cb-res ' + (c.enabled ? 'cb-health-ok' : 'cb-sched-idle') },
+					c.type)),
+				E('td', { 'class': 'cb-u' }, c.name || ''),
+				E('td', { 'class': 'cb-val', 'style': 'font-size:.78rem;color:var(--text-muted)' },
+					String(target).slice(0, 48)),
+				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [
+					E('button', { 'class': 'cb-btn', 'style': 'margin-right:.3rem',
+						'click': function (ev) { self.handleNotifyTest(c, ev); } }, _('Test')),
+					E('button', { 'class': 'cb-btn', 'style': 'margin-right:.3rem',
+						'click': function (ev) { self.handleNotifyToggle(c, ev); } },
+						c.enabled ? _('Pause') : _('Resume')),
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handleNotifyDel(c.id, ev); } }, _('Delete'))
+				])
+			]));
+		});
+
+		// event chips
+		var evBox = document.getElementById('cb-nt-events');
+		if (evBox) {
+			while (evBox.firstChild) evBox.removeChild(evBox.firstChild);
+			var labels = { auto_block: _('Auto block'), new_device: _('New device'), expire: _('Block expired') };
+			(n.event_names || []).forEach(function (e) {
+				var on = n.events && n.events[e];
+				evBox.appendChild(E('div', { 'class': 'cb-dchip' + (on ? ' on' : ''), 'data-event': e,
+					'style': 'width:auto;padding:0 .6rem',
+					'click': function (ev) { ev.currentTarget.classList.toggle('on'); } }, labels[e] || e));
+			});
+		}
 	},
 
 	refreshSched: function () {
@@ -1028,7 +1148,7 @@ return view.extend({
 
 	switchTab: function (name) {
 		this.tab = name;
-		['devices', 'ips', 'logs', 'sched', 'health'].forEach(function (t) {
+		['devices', 'ips', 'logs', 'sched', 'notify', 'health'].forEach(function (t) {
 			var pane = document.getElementById('cb-pane-' + t);
 			var btn = document.getElementById('cb-tab-' + t);
 			if (pane) pane.classList.toggle('active', t === name);
@@ -1037,6 +1157,7 @@ return view.extend({
 		if (name === 'ips') return this.refreshIps();
 		if (name === 'logs') return this.refreshLogs();
 		if (name === 'sched') return this.refreshSched();
+		if (name === 'notify') return this.refreshNotify();
 		if (name === 'health') return this.refreshHealth();
 	},
 
@@ -1335,6 +1456,47 @@ return view.extend({
 			])
 		]);
 
+		var notifyPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-notify'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Send a message when something happens. Every channel is tried independently; a broken one never blocks the action.')),
+			E('div', { 'class': 'cb-sched-form' }, [
+				E('label', {}, [ E('span', {}, _('Type')),
+					E('select', { 'id': 'cb-nt-type' }, [
+						E('option', { 'value': 'telegram' }, 'Telegram'),
+						E('option', { 'value': 'bark' }, 'Bark'),
+						E('option', { 'value': 'webhook' }, _('Webhook'))
+					]) ]),
+				E('label', {}, [ E('span', {}, _('Name')),
+					E('input', { 'type': 'text', 'id': 'cb-nt-name', 'placeholder': _('optional'),
+						'style': 'width:9rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+				E('label', {}, [ E('span', {}, _('URL (bark / webhook)')),
+					E('input', { 'type': 'text', 'id': 'cb-nt-url', 'placeholder': 'https://api.day.app/KEY',
+						'style': 'width:16rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+				E('label', {}, [ E('span', {}, _('Bot token (telegram)')),
+					E('input', { 'type': 'text', 'id': 'cb-nt-token',
+						'style': 'width:12rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+				E('label', {}, [ E('span', {}, _('Chat ID (telegram)')),
+					E('input', { 'type': 'text', 'id': 'cb-nt-chat',
+						'style': 'width:8rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+				E('button', { 'class': 'cb-btn cb-btn-primary',
+					'click': function (ev) { self.handleNotifyAdd(ev); } }, _('Add channel'))
+			]),
+			E('div', { 'style': 'margin:.2rem 0 .5rem;font-size:.8rem;color:var(--text-muted)' }, _('Notify me when:')),
+			E('div', { 'class': 'cb-days', 'id': 'cb-nt-events', 'style': 'margin-bottom:1rem' }),
+			E('button', { 'class': 'cb-btn', 'style': 'margin-bottom:1rem',
+				'click': function (ev) { self.handleNotifyEvents(ev); } }, _('Save events')),
+			E('table', { 'class': 'cb-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('Type')), E('th', {}, _('Name')),
+					E('th', {}, _('Target')), E('th', { 'style': 'text-align:right' }, _('Action'))
+				])),
+				E('tbody', { 'id': 'cb-nt-tbody' })
+			])
+		]);
+
 		var healthPane = E('div', {
 			'class': 'cb-pane',
 			'id': 'cb-pane-health'
@@ -1357,12 +1519,14 @@ return view.extend({
 				tabBtn('ips', _('External IPs')),
 				tabBtn('logs', _('Login log')),
 				tabBtn('sched', _('Schedules')),
+				tabBtn('notify', _('Notifications')),
 				tabBtn('health', _('Health'))
 			]),
 			devicesPane,
 			ipsPane,
 			logsPane,
 			schedPane,
+			notifyPane,
 			healthPane
 		]);
 
@@ -1371,6 +1535,7 @@ return view.extend({
 			self.renderAuto();
 			self.renderLogs();
 			self.renderSched();
+			self.renderNotify();
 		}, 0);
 
 		poll.add(function () {
@@ -1379,6 +1544,7 @@ return view.extend({
 			if (self.tab === 'ips') return self.refreshIps();
 			if (self.tab === 'logs') return self.refreshLogs();
 			if (self.tab === 'sched') return self.refreshSched();
+			if (self.tab === 'notify') return self.refreshNotify();
 			if (self.tab === 'health') return self.refreshHealth();
 			return self.refresh();
 		}, 10);

@@ -12,6 +12,9 @@ local STATE_FILE = STATE_DIR .. "/blocked.json"
 local NAME_FILE = STATE_DIR .. "/names.json"
 local IPSTATE_FILE = STATE_DIR .. "/blocked_ips.json"
 local SCHED_FILE = STATE_DIR .. "/schedule.json"
+local NOTIFY_FILE = STATE_DIR .. "/notify.json"
+local KNOWN_FILE = STATE_DIR .. "/known_devices.json"
+local NOTIFY_TMP = "/tmp/clientblock-notify.json"
 local LOG_FILE = STATE_DIR .. "/login.log"
 local LOG_MAX = 500
 local AUTOCFG_FILE = STATE_DIR .. "/auto.json"
@@ -408,6 +411,8 @@ local function collect_devices()
 			online = online and true or false,
 			blocked = state[mac] ~= nil,
 			blocked_at = state[mac] and state[mac].since or nil,
+			blocked_until = state[mac] and state[mac]["expires"] or nil,
+			block_source = state[mac] and state[mac].source or nil,
 		}
 		seen[mac] = e
 		list[#list + 1] = e
@@ -762,6 +767,8 @@ end
 -- which is what the automatic login-failure path wants (no 6 s firewall reload
 -- in the middle of an attack). The rule file is still refreshed so a reboot
 -- restores the same state.
+local notify_event, notify_send
+
 function methods.ipadd(ip, note, source, fast)
 	local norm = normalize_ip(ip)
 	if not norm then return err("invalid IP address or CIDR") end
@@ -774,6 +781,9 @@ function methods.ipadd(ip, note, source, fast)
 	}
 	if not save_ipstate(st) then return err("cannot write state") end
 	render_rules(load_state())
+	if st[norm].source == "auto" then
+		notify_event("auto_block", "Blocked " .. norm, tostring(note ~= "" and note or "automatic"))
+	end
 	if fast == true or fast == "1" then
 		-- the running ruleset may already have the set; if not, fall back
 		if not set_element_live(norm, true) then reload_firewall() end
@@ -1003,7 +1013,7 @@ function methods.autoset(enabled, threshold, window, ttl, ssh_password, ssh_user
 	            web_auth = cfg.web_auth })
 end
 
-function methods.block(mac, host, ip, source)
+function methods.block(mac, host, ip, source, minutes)
 	mac = normalize_mac(mac)
 	if not mac then return err("invalid MAC") end
 	local state = load_state()
@@ -1011,9 +1021,11 @@ function methods.block(mac, host, ip, source)
 	local s = parse_static_hosts()[mac]
 	local prev = state[mac]
 	if host ~= "" and host then remember_name(mac, host) end
+	local mins = tonumber(minutes) or 0
 	state[mac] = {
 		source = (source ~= "" and source) or (prev and prev.source) or "manual",
 		since = (prev and prev.since) or os.time(),
+		expires = (mins > 0) and (os.time() + mins * 60) or nil,
 		host = (host ~= "" and host) or (prev and prev.host) or (s and s.host) or (l and l.host) or nil,
 		ip = (ip ~= "" and ip) or (l and l.ip) or (s and s.ip) or (prev and prev.ip) or nil,
 	}
@@ -1198,6 +1210,252 @@ local function sched_public(sc)
 		}
 	end
 	return out
+end
+
+-- ============================================================
+-- Notifications (Telegram / Bark / generic webhook)
+-- ============================================================
+local NOTIFY_EVENTS = { "auto_block", "new_device", "expire" }
+
+local function load_notify()
+	local f = io.open(NOTIFY_FILE, "r")
+	if not f then
+		return { seq = 0, channels = {}, events = { auto_block = true, new_device = true, expire = false } }
+	end
+	local raw = f:read("*a")
+	f:close()
+	local p = jsonc.parse(raw)
+	if type(p) ~= "table" then
+		return { seq = 0, channels = {}, events = { auto_block = true, new_device = true, expire = false } }
+	end
+	p.seq = tonumber(p.seq) or 0
+	if type(p.channels) ~= "table" then p.channels = {} end
+	if type(p.events) ~= "table" then p.events = {} end
+	return p
+end
+
+local function save_notify(n)
+	fs.mkdirr(STATE_DIR)
+	local f = io.open(NOTIFY_FILE, "w")
+	if not f then return false end
+	local o = jsonc.stringify(n)
+	if o == "[]" then o = "{}" end
+	f:write(o)
+	f:close()
+	return true
+end
+
+local function shq(v)
+	return "'" .. tostring(v or ""):gsub("'", "'\\''") .. "'"
+end
+
+local function http_post(url, body)
+	local f = io.open(NOTIFY_TMP, "w")
+	if not f then return false end
+	f:write(body)
+	f:close()
+	local rc = sys.call(string.format(
+		"curl -s -m 10 -o /dev/null -X POST -H 'Content-Type: application/json' --data-binary @%s %s",
+		NOTIFY_TMP, shq(url)))
+	fs.unlink(NOTIFY_TMP)
+	return rc == 0
+end
+
+function notify_send(ch, event, title, body)
+	if ch.enabled == false then return false end
+	if ch.type == "telegram" then
+		local url = "https://api.telegram.org/bot" .. tostring(ch.token or "") .. "/sendMessage"
+		return http_post(url, jsonc.stringify({
+			chat_id = ch.chat or "", text = title .. "\n" .. body,
+			disable_web_page_preview = true }))
+	elseif ch.type == "bark" then
+		return http_post(tostring(ch.url or ""), jsonc.stringify({
+			title = title, body = body, group = "OpenWrt" }))
+	elseif ch.type == "webhook" then
+		return http_post(tostring(ch.url or ""), jsonc.stringify({
+			event = event, title = title, body = body, ts = os.time() }))
+	end
+	return false
+end
+
+-- Fire an event to every enabled channel. Never raises: a broken channel must
+-- not break blocking.
+function notify_event(event, title, body)
+	local n = load_notify()
+	if n.events[event] == false then return 0 end
+	local sent = 0
+	for _, ch in ipairs(n.channels) do
+		if notify_send(ch, event, title, body) then sent = sent + 1 end
+	end
+	return sent
+end
+
+function methods.notifyget()
+	local n = load_notify()
+	local out = {}
+	for _, c in ipairs(n.channels) do
+		out[#out + 1] = {
+			id = c.id, type = c.type, name = c.name, enabled = c.enabled ~= false,
+			url = c.url, token = c.token and "***" or "", chat = c.chat,
+			has_token = (c.token ~= nil and c.token ~= ""),
+		}
+	end
+	return { success = true, running = true, channels = out,
+	         events = n.events, event_names = NOTIFY_EVENTS }
+end
+
+function methods.notifyadd(type_, name, url, token, chat)
+	type_ = tostring(type_ or "")
+	if type_ ~= "telegram" and type_ ~= "bark" and type_ ~= "webhook" then
+		return err("type must be telegram, bark or webhook")
+	end
+	if type_ == "telegram" and (tostring(token or "") == "" or tostring(chat or "") == "") then
+		return err("telegram needs a bot token and chat id")
+	end
+	if type_ ~= "telegram" and tostring(url or "") == "" then
+		return err("a URL is required")
+	end
+	local n = load_notify()
+	n.seq = (tonumber(n.seq) or 0) + 1
+	n.channels[#n.channels + 1] = {
+		id = n.seq, type = type_, name = (name ~= "" and name) or type_,
+		url = (url ~= "" and url) or nil, token = (token ~= "" and token) or nil,
+		chat = (chat ~= "" and chat) or nil, enabled = true,
+	}
+	if not save_notify(n) then return err("cannot write settings") end
+	return ok({ id = n.seq })
+end
+
+function methods.notifydel(id)
+	local n = load_notify()
+	for i, c in ipairs(n.channels) do
+		if tostring(c.id) == tostring(id) then
+			table.remove(n.channels, i)
+			save_notify(n)
+			return ok({})
+		end
+	end
+	return err("no such channel")
+end
+
+function methods.notifytoggle(id, enabled)
+	local n = load_notify()
+	for _, c in ipairs(n.channels) do
+		if tostring(c.id) == tostring(id) then
+			c.enabled = (enabled == true or enabled == "1" or enabled == 1 or enabled == "true")
+			save_notify(n)
+			return ok({})
+		end
+	end
+	return err("no such channel")
+end
+
+function methods.notifyevents(events)
+	local n = load_notify()
+	if type(events) == "string" then
+		local t = {}
+		for v in events:gmatch("[%w_]+") do t[#t + 1] = v end
+		events = t
+	end
+	if type(events) == "table" then
+		local set = {}
+		for _, e in ipairs(events) do set[e] = true end
+		for _, e in ipairs(NOTIFY_EVENTS) do n.events[e] = set[e] or false end
+		save_notify(n)
+	end
+	return ok({ events = n.events })
+end
+
+function methods.notifytest(id)
+	local n = load_notify()
+	for _, c in ipairs(n.channels) do
+		if tostring(c.id) == tostring(id) then
+			local ok_ = notify_send(c, "test", "OpenWrt test",
+				"This is a test message from luci-app-clientblock.")
+			-- note: `ok_ and nil or "..."` always yields the string, so branch
+			local res = { success = ok_, running = true }
+			if not ok_ then res.error = "send failed (check URL/token)" end
+			return res
+		end
+	end
+	return err("no such channel")
+end
+
+-- Announce devices we have not seen before. Seeds silently on first run.
+local function check_new_devices()
+	local known
+	local raw = read_all(KNOWN_FILE)
+	if raw then
+		local p = jsonc.parse(raw)
+		if type(p) == "table" then known = p end
+	end
+	local neigh = parse_neigh()
+	local names = {}
+	local leases = parse_leases()
+	local statics = parse_static_hosts()
+	for mac in pairs(neigh) do
+		local l, st = leases[mac], statics[mac]
+		names[mac] = (st and st.host) or (l and l.host) or nil
+	end
+	if not known then
+		local seed = {}
+		for mac in pairs(neigh) do seed[mac] = true end
+		local f = io.open(KNOWN_FILE, "w")
+		if f then f:write(jsonc.stringify(seed)) f:close() end
+		return 0
+	end
+	local added = 0
+	for mac, ip in pairs(neigh) do
+		if not known[mac] then
+			known[mac] = true
+			added = added + 1
+			notify_event("new_device", "New device",
+				string.format("%s (%s) joined the network", names[mac] or mac, ip))
+		end
+	end
+	if added > 0 then
+		local f = io.open(KNOWN_FILE, "w")
+		if f then f:write(jsonc.stringify(known)) f:close() end
+	end
+	return added
+end
+
+-- Remove blocks whose temporary lifetime has run out. Only entries that carry
+-- an expiry are touched; permanent blocks have none.
+function methods.expire()
+	local state = load_state()
+	local now = os.time()
+	local removed = {}
+	for mac, meta in pairs(state) do
+		local u = meta["expires"]
+		if u and tonumber(u) and tonumber(u) <= now then
+			state[mac] = nil
+			removed[#removed + 1] = mac
+		end
+	end
+	if #removed > 0 then
+		for _, mac in ipairs(removed) do
+			notify_event("expire", "Unblocked " .. mac, "temporary block expired")
+		end
+		save_state(state)
+		if next(state) == nil and next(load_ipstate()) == nil then
+			fs.unlink(RULE_FILE)
+		else
+			render_rules(state)
+		end
+		reload_firewall()
+	end
+	return { success = true, running = true, expired = removed }
+end
+
+-- Called once a minute by the watcher: schedules first, then expiry.
+function methods.tick()
+	local e = methods.expire()
+	local sc = methods.schedeval()
+	local nd = check_new_devices()
+	return { success = true, running = true,
+	         expired = e.expired, schedule_changed = sc.changed,
+	         active = sc.active, new_devices = nd }
 end
 
 function methods.schedlist()
@@ -1486,7 +1744,7 @@ if arg[1] == "list" then
 	local s2 = jsonc.stringify({
 		list        = {},
 		status      = {},
-		block       = { mac = "", host = "", ip = "", source = "" },
+		block       = { mac = "", host = "", ip = "", source = "", minutes = "" },
 		unblock     = { mac = "" },
 		unblock_all = {},
 		rename      = { mac = "", name = "" },
@@ -1499,6 +1757,14 @@ if arg[1] == "list" then
 		geoinfo     = { ip = "" },
 		selfcheck   = {},
 		probe       = {},
+		notifyget    = {},
+		notifyadd    = { type_ = "", name = "", url = "", token = "", chat = "" },
+		notifydel    = { id = "" },
+		notifytoggle = { id = "", enabled = "" },
+		notifyevents = { events = "" },
+		notifytest   = { id = "" },
+		expire      = {},
+		tick        = {},
 		schedlist   = {},
 		schedadd    = { mac = "", days = "", start = "", stop = "", name = "" },
 		scheddel    = { id = "" },
@@ -1523,7 +1789,7 @@ elseif arg[1] == "call" then
 	elseif name == "status" then
 		res = methods.status()
 	elseif name == "block" then
-		res = methods.block(req.mac, req.host, req.ip, req.source)
+		res = methods.block(req.mac, req.host, req.ip, req.source, req.minutes)
 	elseif name == "unblock" then
 		res = methods.unblock(req.mac)
 	elseif name == "unblock_all" then
@@ -1551,6 +1817,28 @@ elseif arg[1] == "call" then
 		return
 	elseif name == "logclear" then
 		res = methods.logclear()
+	elseif name == "notifyget" then
+		res = methods.notifyget()
+		reply_list(res, { "channels", "event_names" })
+		return
+	elseif name == "notifyadd" then
+		res = methods.notifyadd(req.type_, req.name, req.url, req.token, req.chat)
+	elseif name == "notifydel" then
+		res = methods.notifydel(req.id)
+	elseif name == "notifytoggle" then
+		res = methods.notifytoggle(req.id, req.enabled)
+	elseif name == "notifyevents" then
+		res = methods.notifyevents(req.events)
+	elseif name == "notifytest" then
+		res = methods.notifytest(req.id)
+	elseif name == "expire" then
+		res = methods.expire()
+		reply_list(res, { "expired" })
+		return
+	elseif name == "tick" then
+		res = methods.tick()
+		reply_list(res, { "expired" })
+		return
 	elseif name == "schedlist" then
 		res = methods.schedlist()
 		reply_list(res, { "rules" })

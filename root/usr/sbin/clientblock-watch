@@ -127,7 +127,7 @@ main() {
 	# block the log reader; the trap below takes it down with us.
 	(
 		while :; do
-			ubus -S call luci.clientblock schedeval >/dev/null 2>&1
+			ubus -S call luci.clientblock tick >/dev/null 2>&1
 			sleep 55
 		done
 	) &

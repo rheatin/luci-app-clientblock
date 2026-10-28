@@ -99,7 +99,7 @@ jobs:
       - name: Prepare package feed
         run: |
           mkdir -p sdk/package/clientblock
-          cp -r Makefile root htdocs postinst prerm postrm sdk/package/clientblock/
+          cp -r Makefile root htdocs po postinst prerm postrm sdk/package/clientblock/
           [ -f LICENSE ] && cp LICENSE sdk/package/clientblock/ || true
 
       - name: Configure (apk output)
@@ -124,7 +124,8 @@ jobs:
           mkdir -p out
           # only our package, and only the .apk form. The filename carries no
           # arch (PKGARCH=all), so tag it or the two matrix jobs collide.
-          for f in $(find sdk/bin -type f -name 'luci-app-clientblock*.apk'); do
+          # the app itself plus its translation package
+          for f in $(find sdk/bin -type f \( -name 'luci-app-clientblock*.apk' -o -name 'luci-i18n-clientblock*.apk' \)); do
             base=$(basename "$f" .apk)
             cp "$f" "out/${base}_${{ matrix.arch }}.apk"
           done
