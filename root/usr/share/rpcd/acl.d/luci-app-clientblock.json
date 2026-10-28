@@ -3,7 +3,7 @@
 		"description": "Grant access to LAN client block management",
 		"read": {
 			"ubus": {
-				"luci.clientblock": [ "list", "status", "iplist", "autoget", "loglist" ]
+				"luci.clientblock": [ "list", "status", "iplist", "autoget", "loglist", "selfcheck" ]
 			}
 		},
 		"write": {

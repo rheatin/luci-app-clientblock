@@ -1079,6 +1079,165 @@ function methods.sync()
 	return ok({ blocked_count = (function() local n = 0 for _ in pairs(state) do n = n + 1 end return n end)() })
 end
 
+local function table_count(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
+end
+
+local function count_in(buf, pat)
+	local n = 0
+	for _ in buf:gmatch(pat) do n = n + 1 end
+	return n
+end
+
+local function read_all(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local d = f:read("*a")
+	f:close()
+	return d
+end
+
+-- End-to-end probe: write a synthetic LuCI login line, wait for the watcher to
+-- record it, then delete that record again. This is the only check that proves
+-- the pipeline works from syslog to stored log entry.
+function methods.probe()
+	local ip = "192.0.2.254"            -- TEST-NET-1, never a real device
+	local before = 0
+	local f0 = io.open(LOG_FILE, "r")
+	if f0 then for _ in f0:lines() do before = before + 1 end f0:close() end
+
+	-- the watcher anchors the source address at end of line, so emit the
+	-- canonical message exactly as LuCI writes it (no trailing marker)
+	sys.call("logger -t dispatcher.uc -p authpriv.info " ..
+	         string.format("%q", "luci: accepted login on / for root from " .. ip))
+
+	local found, waited = false, 0
+	for i = 1, 20 do
+		sys.call("sleep 0.2")
+		waited = i * 200
+		local d = read_all(LOG_FILE)
+		if d and d:find(ip, 1, true) and d ~= "" then
+			local lines = {}
+			for ln in d:gmatch("[^\n]+") do lines[#lines + 1] = ln end
+			if #lines > before then found = true break end
+		end
+	end
+
+	-- remove the probe record so the log stays clean
+	if found then
+		local keep, removed = {}, 0
+		local d = read_all(LOG_FILE) or ""
+		for ln in d:gmatch("[^\n]+") do
+			if ln:find(ip, 1, true) then removed = removed + 1 else keep[#keep + 1] = ln end
+		end
+		local w = io.open(LOG_FILE, "w")
+		if w then w:write(table.concat(keep, "\n") .. (#keep > 0 and "\n" or "")) w:close() end
+	end
+
+	return { success = true, running = true, ok = found, ip = ip,
+	         elapsed_ms = waited, cleaned = found }
+end
+
+-- Health probe. Covers the two failures actually seen in the field: a watcher
+-- that is alive but no longer reads the log, and saved state that never made
+-- it into the kernel.
+function methods.selfcheck()
+	local checks = {}
+	local function add(id, ok, detail, hint)
+		checks[#checks + 1] = { id = id, ok = ok and true or false,
+		                        detail = detail or "", hint = hint or "" }
+	end
+
+	-- 1) watcher process
+	local pid = (read_all("/var/run/clientblock-watch.pid") or ""):gsub("%s", "")
+	local alive = pid ~= "" and sys.call("kill -0 " .. pid .. " >/dev/null 2>&1") == 0
+	add("watcher", alive,
+		alive and ("running (pid " .. pid .. ")") or "not running",
+		alive and "" or "/etc/init.d/clientblock restart")
+
+	-- 2) the logread child that actually feeds it. A bare `logread -f` may be
+	--    an orphan from an earlier run, so require it to belong to our watcher.
+	local logreads = 0
+	if alive then
+		local out = sys.exec("ps w 2>/dev/null | grep '[l]ogread -f'") or ""
+		for pidline in out:gmatch("[^\n]+") do
+			local p = pidline:match("^%s*(%d+)")
+			if p then
+				local st = read_all("/proc/" .. p .. "/stat") or ""
+				-- field 4 is ppid
+				local f = {}
+				for v in st:gmatch("%S+") do f[#f + 1] = v end
+				if f[4] == pid then logreads = logreads + 1 end
+			end
+		end
+	end
+	add("logread", logreads > 0,
+		logreads .. " logread -f child(ren) of the watcher",
+		logreads > 0 and "" or "watcher is not reading the log; restart the service")
+
+	-- 3) generated rule file vs saved state
+	local st, ips = load_state(), load_ipstate()
+	local ns = table_count(st)
+	local rf = read_all(RULE_FILE)
+	local rule_macs = rf and count_in(rf, "ether saddr") or 0
+	local file_ok = (ns == 0 and rule_macs == 0) or (ns > 0 and rule_macs >= ns)
+	add("rulesfile", file_ok,
+		string.format("%d device block(s) saved, %d rule line(s) generated", ns, rule_macs),
+		file_ok and "" or "state and generated rules disagree; run sync")
+
+	-- 4) kernel set vs saved IP state
+	local v4_state, v6_state = 0, 0
+	for ip in pairs(ips) do
+		if ip:find(":") then v6_state = v6_state + 1 else v4_state = v4_state + 1 end
+	end
+	local live4 = 0
+	if v4_state > 0 then
+		live4 = count_in(sys.exec("nft list set inet fw4 blocked_ip4 2>/dev/null") or "",
+		                 "%d+%.%d+%.%d+%.%d+")
+	end
+	local set_ok = (v4_state == 0 and live4 == 0) or (live4 == v4_state)
+	add("nftset", set_ok,
+		string.format("%d blocked IPv4 in state, %d present in kernel", v4_state, live4),
+		set_ok and "" or "run sync to rebuild the nftables set")
+
+	-- 5) rules actually hooked
+	local chain = sys.exec("nft list chain inet fw4 user_ip_forward 2>/dev/null") or ""
+	local hooked = chain:find("clientblock-ip", 1, true) ~= nil or v4_state == 0
+	local dev_rules = tonumber((sys.exec("nft list ruleset 2>/dev/null | grep -c 'clientblock:'") or "0"):match("%d+") or "0") or 0
+	add("nfthook", hooked,
+		string.format("ip drop rule: %s, device rules in kernel: %d",
+			hooked and "present" or "missing", dev_rules),
+		hooked and "" or "firewall reload did not apply our rules")
+
+	-- 6) offline geo database
+	local geo
+	for _, p in ipairs({ "/etc/config/lucky.daji/ipdb/ip2region_v4.xdb",
+	                     "/usr/share/ip2region/ip2region_v4.xdb",
+	                     "/etc/ip2region/ip2region_v4.xdb" }) do
+		if fs.access(p) then geo = p break end
+	end
+	add("geodb", geo ~= nil, geo or "not found (region column stays empty)", "")
+
+	-- 7) state directory writable
+	local probe = STATE_DIR .. "/.probe"
+	local fh = io.open(probe, "w")
+	local writable = fh ~= nil
+	if fh then fh:write("x") fh:close() fs.unlink(probe) end
+	add("state", writable, writable and "writable" or STATE_DIR .. " not writable",
+		writable and "" or "check directory permissions")
+
+	-- 8) automatic protection
+	local cfg = load_autocfg()
+	add("autoprot", cfg.enabled,
+		cfg.enabled and ("on, threshold " .. cfg.threshold) or "off", "")
+
+	local all_ok = true
+	for _, c in ipairs(checks) do if not c.ok then all_ok = false end end
+	return { success = true, running = true, ok = all_ok, checks = checks }
+end
+
 function methods.status(_)
 	local state = load_state()
 	local n = 0
@@ -1132,6 +1291,8 @@ if arg[1] == "list" then
 		ipflush     = {},
 		scan        = {},
 		geoinfo     = { ip = "" },
+		selfcheck   = {},
+		probe       = {},
 		logevent    = { epoch = "", kind = "", result = "", ip = "", user = "", detail = "" },
 		loglist     = { limit = "" },
 		logclear    = {},
@@ -1179,6 +1340,12 @@ elseif arg[1] == "call" then
 		return
 	elseif name == "logclear" then
 		res = methods.logclear()
+	elseif name == "probe" then
+		res = methods.probe()
+	elseif name == "selfcheck" then
+		res = methods.selfcheck()
+		reply_list(res, { "checks" })
+		return
 	elseif name == "geoinfo" then
 		res = methods.geoinfo(req.ip)
 	elseif name == "scan" then

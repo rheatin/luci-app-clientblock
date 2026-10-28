@@ -44,6 +44,11 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callSelfCheck = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'selfcheck'
+});
+
 var callLogList = rpc.declare({
 	object: 'luci.clientblock',
 	method: 'loglist',
@@ -230,6 +235,22 @@ var STYLE = `
 	color: var(--text-muted); border-bottom: 1px solid var(--hairline); border-left: none; }
 .cb-log tr.cb-day td em { font-style: normal; color: var(--brand); }
 
+/* ---- health ---- */
+.cb-health-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .9rem; }
+.cb-health-ok { background: var(--success-surface); color: var(--success); }
+.cb-health-bad { background: var(--danger-surface); color: var(--danger); }
+.cb-checks { display: grid; gap: .45rem; }
+.cb-check { display: grid; grid-template-columns: 1.2rem 12rem 1fr; gap: .6rem;
+	align-items: baseline; padding: .45rem .6rem; border-radius: .35rem;
+	background: var(--surface-sunken); font-size: .85rem; }
+.cb-check.bad { background: var(--danger-surface); }
+.cb-check .cb-mark { font-weight: 700; text-align: center; }
+.cb-check .cb-mark.ok { color: var(--success); }
+.cb-check .cb-mark.bad { color: var(--danger); }
+.cb-check .cb-name { font-weight: 600; }
+.cb-check .cb-val { color: var(--text-muted); font-family: var(--font-mono); font-size: .8rem; }
+.cb-check .cb-hint { grid-column: 2 / 4; color: var(--danger); font-size: .78rem; }
+
 /* new-record flash */
 @keyframes cb-flash { from { background: var(--info-surface); } to { background: transparent; } }
 .cb-log tbody tr.cb-new td { animation: cb-flash 1.6s ease-out 1; }
@@ -371,6 +392,59 @@ return view.extend({
 			return (d.host || '').toLowerCase().indexOf(q) !== -1 ||
 				(d.ip || '').indexOf(q) !== -1 ||
 				(d.mac || '').toLowerCase().indexOf(q) !== -1;
+		});
+	},
+
+	refreshHealth: function () {
+		var self = this;
+		return callSelfCheck().then(function (res) {
+			self.health = res || {};
+			self.renderHealth();
+		}).catch(function (e) {
+			self.health = { ok: false, checks: [], error: e && e.message };
+			self.renderHealth();
+		});
+	},
+
+	renderHealth: function () {
+		var box = document.getElementById('cb-health-body');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+
+		var h = this.health || {};
+		var names = {
+			watcher: _('Service process'),
+			logread: _('Log stream'),
+			rulesfile: _('Generated rules'),
+			nftset: _('Kernel IP set'),
+			nfthook: _('Firewall rules'),
+			geodb: _('Region database'),
+			state: _('State storage'),
+			autoprot: _('Automatic protection')
+		};
+
+		var head = document.getElementById('cb-health-head');
+		if (head) {
+			while (head.firstChild) head.removeChild(head.firstChild);
+			head.appendChild(E('span', {
+				'class': 'cb-res ' + (h.ok ? 'cb-health-ok' : 'cb-health-bad')
+			}, h.ok ? _('all checks passed') : _('attention needed')));
+			if (h.error) head.appendChild(E('span', { 'class': 'cb-drop' }, h.error));
+		}
+
+		var list = h.checks || [];
+		if (!list.length) {
+			box.appendChild(E('div', { 'class': 'cb-empty' }, _('No results yet')));
+			return;
+		}
+
+		list.forEach(function (c) {
+			var bad = !c.ok;
+			box.appendChild(E('div', { 'class': 'cb-check' + (bad ? ' bad' : '') }, [
+				E('span', { 'class': 'cb-mark ' + (bad ? 'bad' : 'ok') }, bad ? '\u2715' : '\u2713'),
+				E('span', { 'class': 'cb-name' }, names[c.id] || c.id),
+				E('span', { 'class': 'cb-val' }, c.detail || '')
+			].concat(bad && c.hint ? [ E('span', { 'class': 'cb-hint' }, c.hint) ] : [])));
 		});
 	},
 
@@ -805,7 +879,7 @@ return view.extend({
 
 	switchTab: function (name) {
 		this.tab = name;
-		['devices', 'ips', 'logs'].forEach(function (t) {
+		['devices', 'ips', 'logs', 'health'].forEach(function (t) {
 			var pane = document.getElementById('cb-pane-' + t);
 			var btn = document.getElementById('cb-tab-' + t);
 			if (pane) pane.classList.toggle('active', t === name);
@@ -813,6 +887,7 @@ return view.extend({
 		});
 		if (name === 'ips') return this.refreshIps();
 		if (name === 'logs') return this.refreshLogs();
+		if (name === 'health') return this.refreshHealth();
 	},
 
 	renderTable: function () {
@@ -1067,17 +1142,33 @@ return view.extend({
 			])
 		]);
 
+		var healthPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-health'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Live checks on the parts that silently fail: the watcher process, the log stream it reads, and whether saved state actually reached the kernel.')),
+			E('div', { 'class': 'cb-health-head' }, [
+				E('span', { 'id': 'cb-health-head', 'style': 'display:flex;gap:.5rem;align-items:center' }),
+				E('button', { 'class': 'cb-btn', 'style': 'margin-left:auto',
+					'click': function (ev) { self.refreshHealth(); } }, _('Re-run'))
+			]),
+			E('div', { 'class': 'cb-checks', 'id': 'cb-health-body' })
+		]);
+
 		var root = E('div', { 'class': 'cb-wrap' }, [
 			E('style', {}, STYLE),
 			E('h2', {}, _('Client Access Control')),
 			E('div', { 'class': 'cb-tabs' }, [
 				tabBtn('devices', _('Devices')),
 				tabBtn('ips', _('External IPs')),
-				tabBtn('logs', _('Login log'))
+				tabBtn('logs', _('Login log')),
+				tabBtn('health', _('Health'))
 			]),
 			devicesPane,
 			ipsPane,
-			logsPane
+			logsPane,
+			healthPane
 		]);
 
 		window.setTimeout(function () {
@@ -1091,6 +1182,7 @@ return view.extend({
 			if (document.hidden) return;
 			if (self.tab === 'ips') return self.refreshIps();
 			if (self.tab === 'logs') return self.refreshLogs();
+			if (self.tab === 'health') return self.refreshHealth();
 			return self.refresh();
 		}, 10);
 

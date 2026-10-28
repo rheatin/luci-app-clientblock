@@ -46,6 +46,15 @@ jobs:
           echo "pkg=$(sed -n 's/^PKG_VERSION:=//p' Makefile)" >> "$GITHUB_OUTPUT"
           echo "rel=$(sed -n 's/^PKG_RELEASE:=//p' Makefile)" >> "$GITHUB_OUTPUT"
 
+      - name: Verify LF line endings
+        run: |
+          # A CRLF shell script breaks its shebang and procd fails with 127.
+          bad=$(git ls-files -z | xargs -0 grep -lU $'\r' 2>/dev/null || true)
+          if [ -n "$bad" ]; then
+            echo "CRLF line endings found in:"; echo "$bad"; exit 1
+          fi
+          echo "all files use LF"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
