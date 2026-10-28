@@ -322,6 +322,8 @@ var STYLE = `
 .cb-trend-legend { display: flex; justify-content: space-between; font-size: .7rem;
 	color: var(--text-subtle); margin-top: .25rem; }
 .cb-trusted { background: var(--info-surface); color: var(--info); }
+.cb-vendor { max-width: 20rem; overflow: hidden; text-overflow: ellipsis;
+	white-space: nowrap; margin-top: .1rem; }
 
 /* ---- schedule ---- */
 .cb-sched-form { display: flex; flex-wrap: wrap; gap: .55rem; align-items: flex-end;
@@ -383,6 +385,17 @@ function fmtGeo(geo) {
 	var cc = (p[4] || '').trim();
 	if (cc && cc !== '0') parts.push(cc);
 	return parts.join(' · ');
+}
+
+function typeLabel(t) {
+	var m = {
+		phone: _('phone'), tablet: _('tablet'), computer: _('computer'),
+		tv: _('TV'), camera: _('camera'), speaker: _('speaker'),
+		printer: _('printer'), console: _('console'), network: _('network gear'),
+		server: _('server'), iot: _('smart device'), wearable: _('wearable'),
+		apple: _('Apple device'), unknown: _('unknown')
+	};
+	return m[t] || _('unknown');
 }
 
 function fmtTime(ts) {
@@ -1690,7 +1703,7 @@ return view.extend({
 		var self = this;
 
 		if (!rows.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 7, 'class': 'cb-empty' },
 				_('No devices match the filter'))));
 		}
 
@@ -1746,9 +1759,18 @@ return view.extend({
 
 			tbody.appendChild(E('tr', { 'class': d.blocked ? 'cb-blocked' : (d.online ? '' : 'cb-offline') }, [
 				E('td', {}, [ stateBadge, newBadge ]),
-				E('td', {}, nameCell),
+				E('td', {}, [
+					nameCell,
+					(d.vendor || d.device_type)
+						? E('div', { 'class': 'cb-drop cb-vendor', 'title': (d.vendor || '') + ' · ' + typeLabel(d.device_type) },
+							(d.vendor || _('unknown vendor')) + ' · ' + typeLabel(d.device_type))
+						: ''
+				]),
 				E('td', { 'class': 'cb-mono' }, d.ip || '-'),
 				E('td', { 'class': 'cb-mono' }, d.mac),
+				E('td', { 'class': 'cb-drop' }, d.first_seen
+					? ((d.first_assumed ? '≈ ' : '') + fmtTime(d.first_seen))
+					: '-'),
 				E('td', {}, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
 				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [ trustBtn, action ])
 			]));
@@ -1895,6 +1917,7 @@ return view.extend({
 					E('th', {}, _('Name')),
 					E('th', {}, _('IP')),
 					E('th', {}, _('MAC')),
+					E('th', {}, _('First seen')),
 					E('th', {}, _('Dropped')),
 					E('th', { 'style': 'text-align:right' }, _('Action'))
 				])),

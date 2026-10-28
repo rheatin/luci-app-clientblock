@@ -19,6 +19,7 @@ local WL_FILE = STATE_DIR .. "/whitelist.json"
 local PANIC_FILE = STATE_DIR .. "/panic.json"
 local FEEDS_FILE = STATE_DIR .. "/feeds.json"
 local PENDING_FILE = STATE_DIR .. "/pending.json"
+local OUI_CACHE = STATE_DIR .. "/oui_cache.json"
 local KNOWN_FILE = STATE_DIR .. "/known_devices.json"
 local NOTIFY_TMP = "/tmp/clientblock-notify.json"
 local LOG_FILE = STATE_DIR .. "/login.log"
@@ -229,6 +230,149 @@ local function sorted_keys(t)
 end
 
 -- ============================================================
+-- Device identification: first seen, MAC vendor, guessed type
+-- ============================================================
+
+-- Offline fallback for the vendors a home network actually contains. The
+-- authoritative source is the online lookup; this only covers a cold start or
+-- a router without internet.
+local OUI_TABLE = {
+	["00:03:93"] = "Apple", ["00:0a:27"] = "Apple", ["00:0a:95"] = "Apple",
+	["00:1b:63"] = "Apple", ["00:1e:c2"] = "Apple", ["00:23:12"] = "Apple",
+	["3c:07:54"] = "Apple", ["40:ed:cf"] = "Apple", ["64:b9:e8"] = "Apple",
+	["68:ab:1e"] = "Apple", ["78:4f:43"] = "Apple", ["8c:85:90"] = "Apple",
+	["a4:83:e7"] = "Apple", ["ac:df:a1"] = "Apple", ["d4:90:9c"] = "Apple",
+	["f0:18:98"] = "Apple", ["70:3e:ac"] = "Apple", ["88:66:a5"] = "Apple",
+	["34:fa:1c"] = "Xiaomi", ["64:90:c1"] = "Xiaomi", ["78:8b:2a"] = "Xiaomi",
+	["5c:e5:0c"] = "Xiaomi", ["a4:a9:30"] = "Xiaomi", ["50:8f:4c"] = "Xiaomi",
+	["28:6c:07"] = "Xiaomi", ["64:cc:2e"] = "Xiaomi", ["7c:1d:d9"] = "Xiaomi",
+	["8c:53:c3"] = "Xiaomi", ["f0:b4:29"] = "Xiaomi", ["24:18:c0"] = "Xiaomi",
+	["98:88:e0"] = "Espressif", ["24:0a:c4"] = "Espressif", ["30:ae:a4"] = "Espressif",
+	["84:f3:eb"] = "Espressif", ["5c:cf:7f"] = "Espressif", ["a0:20:a6"] = "Espressif",
+	["dc:4f:22"] = "Espressif", ["3c:61:05"] = "Espressif", ["7c:9e:bd"] = "Espressif",
+	["3c:6a:48"] = "TP-Link", ["50:c7:bf"] = "TP-Link", ["60:a4:b7"] = "TP-Link",
+	["a4:2b:b0"] = "TP-Link", ["c4:6e:1f"] = "TP-Link", ["ec:08:6b"] = "TP-Link",
+	["98:da:c4"] = "TP-Link", ["14:cc:20"] = "TP-Link",
+	["60:45:cb"] = "ASUS", ["04:d4:c4"] = "ASUS", ["2c:fd:a1"] = "ASUS",
+	["50:46:5d"] = "ASUS", ["ac:9e:17"] = "ASUS", ["1c:87:2c"] = "ASUS",
+	["24:5e:be"] = "QNAP", ["00:08:9b"] = "QNAP", ["00:11:32"] = "Synology",
+	["34:5a:60"] = "MSI", ["4c:cc:6a"] = "MSI", ["d8:cb:8a"] = "MSI",
+	["54:ef:44"] = "Aqara", ["04:cf:8c"] = "Aqara", ["84:7c:9b"] = "Midea",
+	["3c:a9:ab"] = "Nintendo", ["34:e6:e6"] = "LG", ["00:1e:75"] = "LG",
+	["8c:77:12"] = "Samsung", ["34:23:ba"] = "Samsung", ["78:1f:db"] = "Samsung",
+	["00:13:a9"] = "Sony", ["fc:0f:e6"] = "Sony", ["7c:1e:52"] = "Microsoft",
+	["44:65:0d"] = "Amazon", ["f0:27:2d"] = "Amazon", ["74:c2:46"] = "Amazon",
+	["3c:5a:b4"] = "Google", ["f4:f5:d8"] = "Google", ["a4:77:33"] = "Google",
+	["00:0e:58"] = "Sonos", ["5c:aa:fd"] = "Sonos", ["b0:a7:37"] = "Roku",
+	["44:19:b6"] = "Hikvision", ["bc:ad:28"] = "Hikvision", ["3c:ef:8c"] = "Dahua",
+	["10:d5:61"] = "Tuya", ["18:69:d8"] = "Tuya", ["50:02:91"] = "Tuya",
+	["68:57:2d"] = "Tuya", ["84:e3:42"] = "Tuya",
+	["b8:27:eb"] = "Raspberry Pi", ["dc:a6:32"] = "Raspberry Pi", ["e4:5f:01"] = "Raspberry Pi",
+	["24:5a:4c"] = "Ubiquiti", ["78:8a:20"] = "Ubiquiti", ["f4:92:bf"] = "Ubiquiti",
+	["20:4e:7f"] = "Netgear", ["a0:40:a0"] = "Netgear",
+	["00:1b:21"] = "Intel", ["3c:97:0e"] = "Intel", ["8c:16:45"] = "Intel",
+	["a0:36:9f"] = "Intel", ["94:c6:91"] = "Intel",
+	["00:e0:4c"] = "Realtek", ["52:54:00"] = "QEMU/KVM", ["bc:24:11"] = "Proxmox",
+	["00:15:5d"] = "Hyper-V", ["00:50:56"] = "VMware",
+	["00:e0:fc"] = "Huawei", ["48:46:fb"] = "Huawei", ["78:1d:ba"] = "Huawei",
+	["1c:20:19"] = "OPPO", ["00:0c:43"] = "MediaTek", ["00:10:18"] = "Broadcom",
+}
+
+local function is_local_mac(mac)
+	local b = tonumber(mac:sub(1, 2), 16)
+	return b ~= nil and (b % 4) >= 2
+end
+
+local function vendor_cached(mac)
+	local prefix = mac:sub(1, 8)
+	local cache = load_json_map(OUI_CACHE, function() return {} end)
+	local e = cache[prefix]
+	if e and e.v and e.v ~= "" then return e.v end
+	if OUI_TABLE[prefix] then return OUI_TABLE[prefix] end
+	return nil
+end
+
+-- Ask macvendors.com for one prefix at a time. Called from the minute tick so
+-- a slow or rate-limited API never blocks the UI.
+local function oui_enrich(max_lookups)
+	local cache = load_json_map(OUI_CACHE, function() return {} end)
+	local neigh = parse_neigh()
+	local now = os.time()
+	local done, seen = 0, {}
+
+	for mac in pairs(neigh) do
+		if done >= max_lookups then break end
+		local prefix = mac:sub(1, 8)
+		-- locally administered addresses (containers, VMs, phone privacy
+		-- MACs) have no vendor entry at all
+		if not is_local_mac(mac) and not seen[prefix] and not OUI_TABLE[prefix] then
+			seen[prefix] = true
+			local e = cache[prefix]
+			local stale = (not e) or (not e.t) or (now - e.t > 7 * 86400)
+			if stale then
+				local out = sys.exec(string.format(
+					"curl -s -m 5 'https://api.macvendors.com/%s' 2>/dev/null",
+					prefix:gsub(":", "%%3A")))
+				out = (out or ""):gsub("^%s+", ""):gsub("%s+$", "")
+				-- the API answers with a JSON error for unknown or throttled
+				-- prefixes; keep the timestamp but no vendor, and move on
+				local bad = out == "" or out:find("errors", 1, true) or out:find("Too Many", 1, true)
+				cache[prefix] = { v = (not bad) and out or nil, t = now }
+				done = done + 1
+				sys.call("sleep 1")
+			end
+		end
+	end
+
+	if done > 0 then save_json_map(OUI_CACHE, cache) end
+	return done
+end
+
+local function first_seen_of(mac)
+	local known = _known_cache
+	if not known then
+		known = load_json_map(KNOWN_FILE, function() return {} end)
+		_known_cache = known
+	end
+	local v = known[mac]
+	if type(v) == "table" then return v.first, (v.assumed and true or false) end
+	return nil, true
+end
+
+local function guess_type(host, vendor)
+	local h = (host or ""):lower()
+	local v = (vendor or ""):lower()
+	local function has(s) return h:find(s, 1, true) ~= nil end
+
+	if has("iphone") then return "phone" end
+	if has("ipad") then return "tablet" end
+	if has("watch") then return "wearable" end
+	if has("macbook") or has("mac-") or has("imac") then return "computer" end
+	if has("tv") or has("roku") or has("firestick") or has("chromecast") then return "tv" end
+	if has("camera") or has("cam") or has("doorbell") or has("frigate") then return "camera" end
+	if has("homepod") or has("sonos") or has("speaker") or has("echo") then return "speaker" end
+	if has("printer") then return "printer" end
+	if has("switch") or has("nintendo") or has("xbox") or has("playstation") then return "console" end
+	if has("router") or has("ap-") or has("ac68") or has("be6500") then return "network" end
+	if has("nas") or has("qnap") or has("synology") or has("pve") or has("docker") or has("server") then return "server" end
+	if has("airpurifier") or has("purifier") or has("fan") or has("light") or has("yeelight")
+		or has("airfresh") or has("feeder") or has("dishwasher") or has("fryer") or has("cooker")
+		or has("heater") or has("ac-") or has("plug") or has("ups") or has("ecoflow") then
+		return "iot"
+	end
+
+	if v:find("espressif") or v:find("tuya") or v:find("lumi") or v:find("aqara") then return "iot" end
+	if v:find("apple") then return "apple" end
+	if v:find("xiaomi") or v:find("midea") or v:find("haier") then return "iot" end
+	if v:find("qnap") or v:find("synology") or v:find("proxmox") or v:find("vmware")
+		or v:find("qemu") or v:find("hyper-v") then return "server" end
+	if v:find("tp-link") or v:find("asus") or v:find("ubiquiti") or v:find("netgear")
+		or v:find("huawei") or v:find("mediatek") or v:find("broadcom") then return "network" end
+	if v:find("intel") or v:find("realtek") or v:find("msi") then return "computer" end
+	return "unknown"
+end
+
+-- ============================================================
 -- Whitelist, panic mode, trends, port templates, feeds, export/import
 -- ============================================================
 
@@ -249,7 +393,10 @@ function methods.knownadd(mac)
 	mac = normalize_mac(mac)
 	if not mac then return err("invalid MAC") end
 	local known = load_json_map(KNOWN_FILE, function() return {} end)
-	known[mac] = true
+	local pending0 = load_json_map(PENDING_FILE, function() return {} end)
+	local prev = known[mac]
+	local first = (type(prev) == "table" and prev.first) or (pending0[mac] and pending0[mac].first) or os.time()
+	known[mac] = { first = first, assumed = (type(prev) == "table" and prev.assumed) or false }
 	save_json_map(KNOWN_FILE, known)
 	local pending = load_json_map(PENDING_FILE, function() return {} end)
 	pending[mac] = nil
@@ -830,6 +977,7 @@ local function collect_devices()
 			return
 		end
 		local st = state[mac]
+		local _fs, _fsa = first_seen_of(mac)
 		local e = {
 			mac = mac,
 			ip = ip,
@@ -840,6 +988,12 @@ local function collect_devices()
 			blocked_until = state[mac] and state[mac]["expires"] or nil,
 			block_source = state[mac] and state[mac].source or nil,
 			trusted = wl_has(mac),
+			vendor = vendor_cached(mac),
+			local_mac = is_local_mac(mac),
+			device_type = guess_type(
+				(statics[mac] and statics[mac].host) or (leases[mac] and leases[mac].host) or names[mac],
+				vendor_cached(mac)),
+			first_seen = _fs, first_assumed = _fsa,
 			is_new = (function()
 				local known = _known_cache
 				if not known then
@@ -1835,7 +1989,23 @@ function methods.notifytest(id)
 end
 
 -- Announce devices we have not seen before. Seeds silently on first run.
+local function migrate_known()
+	local known = load_json_map(KNOWN_FILE, function() return {} end)
+	local changed = false
+	local now = os.time()
+	for mac, v in pairs(known) do
+		if v == true then
+			-- we only start recording from now on; mark it as an assumption
+			known[mac] = { first = now, assumed = true }
+			changed = true
+		end
+	end
+	if changed then save_json_map(KNOWN_FILE, known) end
+	return changed
+end
+
 local function check_new_devices()
+	migrate_known()
 	local known
 	local raw = read_all(KNOWN_FILE)
 	if raw then
@@ -2102,9 +2272,10 @@ function methods.tick()
 	local e = methods.expire()
 	local sc = methods.schedeval()
 	local nd = check_new_devices()
+	local oui = oui_enrich(2)
 	return { success = true, running = true,
 	         expired = e.expired, schedule_changed = sc.changed,
-	         active = sc.active, new_devices = nd }
+	         active = sc.active, new_devices = nd, oui_lookups = oui }
 end
 
 function methods.schedlist()

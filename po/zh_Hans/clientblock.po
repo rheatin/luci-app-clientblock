@@ -6,6 +6,48 @@ msgstr ""
 "Language: zh_Hans\n"
 "MIME-Version: 1.0\n"
 
+msgid "phone"
+msgstr "手机"
+
+msgid "tablet"
+msgstr "平板"
+
+msgid "computer"
+msgstr "电脑"
+
+msgid "TV"
+msgstr "电视"
+
+msgid "camera"
+msgstr "摄像头"
+
+msgid "speaker"
+msgstr "音箱"
+
+msgid "printer"
+msgstr "打印机"
+
+msgid "console"
+msgstr "游戏机"
+
+msgid "network gear"
+msgstr "网络设备"
+
+msgid "server"
+msgstr "服务器"
+
+msgid "smart device"
+msgstr "智能设备"
+
+msgid "wearable"
+msgstr "穿戴设备"
+
+msgid "Apple device"
+msgstr "Apple 设备"
+
+msgid "unknown"
+msgstr "未知"
+
 msgid "Blocking…"
 msgstr "封禁中…"
 
@@ -411,6 +453,9 @@ msgstr "重命名"
 msgid "(unnamed)"
 msgstr "（未命名）"
 
+msgid "unknown vendor"
+msgstr "未知厂商"
+
 msgid "Filter by name, IP or MAC"
 msgstr "按名称、IP 或 MAC 过滤"
 
@@ -458,6 +503,9 @@ msgstr "IP"
 
 msgid "MAC"
 msgstr "MAC"
+
+msgid "First seen"
+msgstr "首次出现"
 
 msgid "Dropped"
 msgstr "已丢弃"
