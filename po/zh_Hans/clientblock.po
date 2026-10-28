@@ -72,6 +72,24 @@ msgstr "封禁到期"
 msgid "Pick a device"
 msgstr "请选择设备"
 
+msgid "No port restrictions yet"
+msgstr "还没有端口限制"
+
+msgid "Curfew applied to"
+msgstr "已对以下数量设备执行宵禁："
+
+msgid "devices"
+msgstr "台设备"
+
+msgid "No groups yet"
+msgstr "还没有分组"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Curfew"
+msgstr "宵禁"
+
 msgid "Pick at least one day"
 msgstr "至少选一天"
 
@@ -204,9 +222,6 @@ msgstr "统计窗口（秒）"
 msgid "Expire after (0 = never)"
 msgstr "有效期（秒，0 = 永久）"
 
-msgid "Save"
-msgstr "保存"
-
 msgid "Scan now"
 msgstr "立即扫描"
 
@@ -246,9 +261,6 @@ msgstr "重命名"
 msgid "(unnamed)"
 msgstr "（未命名）"
 
-msgid "devices"
-msgstr "台设备"
-
 msgid "Filter by name, IP or MAC"
 msgstr "按名称、IP 或 MAC 过滤"
 
@@ -282,6 +294,30 @@ msgstr "已丢弃"
 msgid "Action"
 msgstr "操作"
 
+msgid "Port restrictions"
+msgstr "端口限制"
+
+msgid "Let a device use the internet but block specific local services, e.g. keep IoT off SMB/445 or telnet."
+msgstr "允许设备上网，但阻断指定的内网服务，例如不让 IoT 设备访问 SMB/445 或 telnet。"
+
+msgid "Device"
+msgstr "设备"
+
+msgid "Protocol"
+msgstr "协议"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "Note"
+msgstr "备注"
+
+msgid "optional"
+msgstr "可选"
+
+msgid "Block port"
+msgstr "封禁端口"
+
 msgid "Blocked addresses cannot be reached from your LAN, and cannot reach it. Both directions are dropped. CIDR ranges are supported."
 msgstr "被封禁的地址既无法从内网访问，也无法访问内网。两个方向都丢弃，支持 CIDR 网段。"
 
@@ -299,9 +335,6 @@ msgstr "地址"
 
 msgid "Region"
 msgstr "归属地"
-
-msgid "Note"
-msgstr "备注"
 
 msgid "Since"
 msgstr "起始时间"
@@ -348,9 +381,6 @@ msgstr "详情"
 msgid "Block a device on a weekly schedule. A window that ends before it starts crosses midnight, and its days refer to the day the window begins."
 msgstr "按星期给设备设定封禁时段。结束时间早于开始时间表示跨午夜，所选星期指窗口开始的那一天。"
 
-msgid "Device"
-msgstr "设备"
-
 msgid "Days"
 msgstr "星期"
 
@@ -366,6 +396,21 @@ msgstr "添加规则"
 msgid "Window"
 msgstr "时段"
 
+msgid "Groups and curfew"
+msgstr "分组与宵禁"
+
+msgid "Group devices (family / kids / IoT) and block them all at once. Curfew blocks the group until 08:00."
+msgstr "把设备分组（家人 / 孩子 / IoT），可整组一键封禁。宵禁会把整组封到次日 08:00。"
+
+msgid "New group"
+msgstr "新建分组"
+
+msgid "e.g. Kids"
+msgstr "例如：孩子"
+
+msgid "Add group"
+msgstr "添加分组"
+
 msgid "Send a message when something happens. Every channel is tried independently; a broken one never blocks the action."
 msgstr "事件发生时推送消息。各渠道独立发送，某个渠道失败不会影响动作本身。"
 
@@ -374,9 +419,6 @@ msgstr "类型"
 
 msgid "Webhook"
 msgstr "Webhook"
-
-msgid "optional"
-msgstr "可选"
 
 msgid "URL (bark / webhook)"
 msgstr "URL（Bark / Webhook）"

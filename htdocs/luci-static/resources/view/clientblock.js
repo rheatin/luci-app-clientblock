@@ -44,6 +44,15 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callGroupList = rpc.declare({ object: 'luci.clientblock', method: 'grouplist' });
+var callGroupAdd = rpc.declare({ object: 'luci.clientblock', method: 'groupadd', params: ['name', 'macs'] });
+var callGroupDel = rpc.declare({ object: 'luci.clientblock', method: 'groupdel', params: ['id'] });
+var callGroupSet = rpc.declare({ object: 'luci.clientblock', method: 'groupset', params: ['id', 'macs'] });
+var callCurfew = rpc.declare({ object: 'luci.clientblock', method: 'curfew', params: ['id', 'minutes'] });
+var callPortList = rpc.declare({ object: 'luci.clientblock', method: 'portlist' });
+var callPortAdd = rpc.declare({ object: 'luci.clientblock', method: 'portadd', params: ['mac', 'proto', 'port', 'note'] });
+var callPortDel = rpc.declare({ object: 'luci.clientblock', method: 'portdel', params: ['id'] });
+
 var callNotifyGet = rpc.declare({ object: 'luci.clientblock', method: 'notifyget' });
 var callNotifyAdd = rpc.declare({ object: 'luci.clientblock', method: 'notifyadd',
 	params: ['type_', 'name', 'url', 'token', 'chat'] });
@@ -555,6 +564,153 @@ return view.extend({
 					'click': function (ev) { ev.currentTarget.classList.toggle('on'); } }, labels[e] || e));
 			});
 		}
+	},
+
+	refreshPorts: function () {
+		var self = this;
+		return callPortList().then(function (res) {
+			self.ports = (res && res.rules) || [];
+			self.renderPorts();
+		}).catch(function () { self.renderPorts(); });
+	},
+
+	refreshGroups: function () {
+		var self = this;
+		return callGroupList().then(function (res) {
+			self.groups = (res && res.groups) || [];
+			self.renderGroups();
+		}).catch(function () { self.renderGroups(); });
+	},
+
+	handlePortAdd: function (ev) {
+		var self = this;
+		var mac = (document.getElementById('cb-port-mac') || {}).value || '';
+		var proto = (document.getElementById('cb-port-proto') || {}).value || 'tcp';
+		var port = (document.getElementById('cb-port-num') || {}).value || '';
+		var note = (document.getElementById('cb-port-note') || {}).value || '';
+		if (!mac) { ui.addNotification(null, E('p', {}, _('Pick a device')), 'warning'); return; }
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callPortAdd(mac, proto, port, note).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			return self.refreshPorts();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handlePortDel: function (id, ev) {
+		var self = this;
+		ev.currentTarget.disabled = true;
+		return callPortDel(id).then(function () { return self.refreshPorts(); })
+			.catch(function (e) { ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error'); });
+	},
+
+	renderPorts: function () {
+		var tbody = document.getElementById('cb-port-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+		var self = this;
+
+		var sel = document.getElementById('cb-port-mac');
+		if (sel) {
+			var keep = sel.value;
+			while (sel.firstChild) sel.removeChild(sel.firstChild);
+			(this.devices || []).forEach(function (d) {
+				sel.appendChild(E('option', { 'value': d.mac }, (d.host || d.mac) + (d.ip ? '  ' + d.ip : '')));
+			});
+			if (keep) sel.value = keep;
+		}
+
+		var list = this.ports || [];
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
+				_('No port restrictions yet'))));
+			return;
+		}
+		list.forEach(function (r) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-u' }, r.host || r.mac),
+				E('td', { 'class': 'cb-t' }, r.proto + '/' + r.port),
+				E('td', { 'style': 'font-size:.78rem;color:var(--text-muted)' }, r.note || ''),
+				E('td', { 'style': 'text-align:right' },
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handlePortDel(r.id, ev); } }, _('Delete')))
+			]));
+		});
+	},
+
+	handleGroupAdd: function (ev) {
+		var self = this;
+		var el = document.getElementById('cb-group-name');
+		var name = el ? el.value : '';
+		if (!name) return;
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callGroupAdd(name, '').then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			if (el) el.value = '';
+			return self.refreshGroups();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleGroupDel: function (id, ev) {
+		var self = this;
+		ev.currentTarget.disabled = true;
+		return callGroupDel(id).then(function () { return self.refreshGroups(); })
+			.catch(function (e) { ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error'); });
+	},
+
+	handleCurfew: function (g, ev) {
+		var self = this;
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callCurfew(g.id, '0').then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {} , _('Curfew applied to') + ' ' + (res.blocked || 0) + ' ' + _('devices')), 'info');
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	renderGroups: function () {
+		var box = document.getElementById('cb-sched-groups');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		var self = this;
+		var list = this.groups || [];
+		if (!list.length) {
+			box.appendChild(E('div', { 'class': 'cb-empty' }, _('No groups yet')));
+			return;
+		}
+		list.forEach(function (g) {
+			var pick = E('select', { 'multiple': 'multiple', 'size': '3',
+				'style': 'min-width:16rem;font-size:.78rem;padding:.2rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' });
+			(self.devices || []).forEach(function (d) {
+				var sel = (g.macs || []).indexOf(d.mac) !== -1;
+				pick.appendChild(E('option', { 'value': d.mac, 'selected': sel ? 'selected' : null },
+					(d.host || d.mac)));
+			});
+			box.appendChild(E('div', { 'style': 'display:flex;gap:.6rem;align-items:flex-start;flex-wrap:wrap;padding:.5rem 0;border-bottom:1px solid var(--hairline)' }, [
+				E('div', { 'style': 'min-width:9rem' }, [
+					E('div', { 'class': 'cb-u' }, g.name),
+					E('div', { 'class': 'cb-drop' }, (g.count || 0) + ' ' + _('devices'))
+				]),
+				pick,
+				E('div', { 'style': 'display:flex;gap:.35rem' }, [
+					E('button', { 'class': 'cb-btn', 'click': function () {
+						var macs = [];
+						Array.prototype.forEach.call(pick.options, function (o) { if (o.selected) macs.push(o.value); });
+						callGroupSet(g.id, macs.join(',')).then(function () { return self.refreshGroups(); })
+							.catch(function (e) { ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error'); });
+					} }, _('Save')),
+					E('button', { 'class': 'cb-btn cb-btn-primary',
+						'click': function (ev) { self.handleCurfew(g, ev); } }, _('Curfew')),
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handleGroupDel(g.id, ev); } }, _('Delete'))
+				])
+			]));
+		});
 	},
 
 	refreshSched: function () {
@@ -1156,7 +1312,7 @@ return view.extend({
 		});
 		if (name === 'ips') return this.refreshIps();
 		if (name === 'logs') return this.refreshLogs();
-		if (name === 'sched') return this.refreshSched();
+		if (name === 'sched') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'notify') return this.refreshNotify();
 		if (name === 'health') return this.refreshHealth();
 	},
@@ -1312,6 +1468,39 @@ return view.extend({
 					E('th', { 'style': 'text-align:right' }, _('Action'))
 				])),
 				E('tbody', { 'id': 'cb-tbody' })
+			]),
+			E('div', { 'class': 'cb-card', 'style': 'margin-top:1.2rem' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Port restrictions'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
+						_('Let a device use the internet but block specific local services, e.g. keep IoT off SMB/445 or telnet.')),
+					E('div', { 'class': 'cb-sched-form', 'style': 'padding:0;border:none;background:none;margin-bottom:.8rem' }, [
+						E('label', {}, [ E('span', {}, _('Device')),
+							E('select', { 'id': 'cb-port-mac', 'style': 'min-width:14rem' }) ]),
+						E('label', {}, [ E('span', {}, _('Protocol')),
+							E('select', { 'id': 'cb-port-proto' }, [
+								E('option', { 'value': 'tcp' }, 'tcp'),
+								E('option', { 'value': 'udp' }, 'udp') ]) ]),
+						E('label', {}, [ E('span', {}, _('Port')),
+							E('input', { 'type': 'number', 'id': 'cb-port-num', 'min': '1', 'max': '65535', 'value': '445',
+								'style': 'width:6rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('label', {}, [ E('span', {}, _('Note')),
+							E('input', { 'type': 'text', 'id': 'cb-port-note', 'placeholder': _('optional'),
+								'style': 'width:10rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handlePortAdd(ev); } }, _('Block port'))
+					]),
+					E('table', { 'class': 'cb-table' }, [
+						E('thead', {}, E('tr', {}, [
+							E('th', {}, _('Device')), E('th', {}, _('Port')),
+							E('th', {}, _('Note')), E('th', { 'style': 'text-align:right' }, _('Action'))
+						])),
+						E('tbody', { 'id': 'cb-port-tbody' })
+					])
+				])
 			])
 		]);
 
@@ -1453,6 +1642,24 @@ return view.extend({
 					E('th', { 'style': 'text-align:right' }, _('Action'))
 				])),
 				E('tbody', { 'id': 'cb-sched-tbody' })
+			]),
+			E('div', { 'class': 'cb-card', 'style': 'margin-top:1.2rem' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Groups and curfew'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
+						_('Group devices (family / kids / IoT) and block them all at once. Curfew blocks the group until 08:00.')),
+					E('div', { 'class': 'cb-sched-form', 'style': 'padding:0;border:none;background:none;margin-bottom:.6rem' }, [
+						E('label', {}, [ E('span', {}, _('New group')),
+							E('input', { 'type': 'text', 'id': 'cb-group-name', 'placeholder': _('e.g. Kids'),
+								'style': 'width:12rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleGroupAdd(ev); } }, _('Add group'))
+					]),
+					E('div', { 'id': 'cb-sched-groups' })
+				])
 			])
 		]);
 
@@ -1536,6 +1743,8 @@ return view.extend({
 			self.renderLogs();
 			self.renderSched();
 			self.renderNotify();
+			self.renderPorts();
+			self.renderGroups();
 		}, 0);
 
 		poll.add(function () {
