@@ -1918,6 +1918,86 @@ function methods.selfcheck()
 	return { success = true, running = true, ok = all_ok, checks = checks }
 end
 
+-- Aggregates for the landing page. Deliberately returns no addresses: the
+-- dashboard must not expose the LAN inventory.
+function methods.dashboard()
+	local devs = collect_devices()
+	local total, online, blocked_dev = 0, 0, 0
+	for _, d in ipairs(devs) do
+		total = total + 1
+		if d.online then online = online + 1 end
+		if d.blocked then blocked_dev = blocked_dev + 1 end
+	end
+
+	local ips = load_ipstate()
+	local ip_total, ip_auto = 0, 0
+	for _, m in pairs(ips) do
+		ip_total = ip_total + 1
+		if m.source == "auto" then ip_auto = ip_auto + 1 end
+	end
+
+	-- login counters for today + last 24h
+	local t = os.date("*t")
+	local day_start = os.time({ year = t.year, month = t.month, day = t.day, hour = 0, min = 0, sec = 0 })
+	local now = os.time()
+	local ok_today, fail_today, fail_24h, recent = 0, 0, 0, {}
+	local f = io.open(LOG_FILE, "r")
+	if f then
+		local all = {}
+		for line in f:lines() do
+			local ts, kind, result = line:match("^(%d+)|([^|]*)|([^|]*)")
+			if ts then
+				ts = tonumber(ts)
+				all[#all + 1] = { ts = ts, kind = kind, result = result }
+				if ts >= day_start then
+					if result == "success" then ok_today = ok_today + 1
+					elseif result == "failure" then fail_today = fail_today + 1 end
+				end
+				if result == "failure" and ts >= now - 86400 then fail_24h = fail_24h + 1 end
+			end
+		end
+		f:close()
+		-- newest few, without any address
+		for i = #all, math.max(1, #all - 5), -1 do
+			recent[#recent + 1] = { ts = all[i].ts, kind = all[i].kind, result = all[i].result }
+		end
+	end
+
+	-- health, condensed
+	local sc = methods.selfcheck()
+	local failing = {}
+	for _, c in ipairs(sc.checks or {}) do
+		if not c.ok then failing[#failing + 1] = { id = c.id, detail = c.detail, hint = c.hint } end
+	end
+
+	local sched = methods.schedlist()
+	local active_sched = 0
+	for _, r in ipairs(sched.rules or {}) do
+		if r.active then active_sched = active_sched + 1 end
+	end
+
+	local grp = load_groups()
+	local prt = load_ports()
+	local ntf = load_notify()
+	local cfg = load_autocfg()
+
+	local ngrp, nch = 0, 0
+	for _ in pairs(grp.groups or {}) do ngrp = ngrp + 1 end
+	for _ in pairs(ntf.channels or {}) do nch = nch + 1 end
+
+	return {
+		success = true, running = true,
+		devices_total = total, devices_online = online, devices_blocked = blocked_dev,
+		ips_blocked = ip_total, ips_auto = ip_auto,
+		logins_ok_today = ok_today, logins_fail_today = fail_today, logins_fail_24h = fail_24h,
+		schedules = #(sched.rules or {}), schedules_active = active_sched,
+		groups = ngrp, ports = #(prt.rules or {}), channels = nch,
+		auto_enabled = cfg.enabled, threshold = cfg.threshold, window = cfg.window, ttl = cfg.ttl,
+		health_ok = sc.ok, health_failing = failing,
+		recent = recent,
+	}
+end
+
 function methods.status(_)
 	local state = load_state()
 	local n = 0
@@ -1972,6 +2052,7 @@ if arg[1] == "list" then
 		scan        = {},
 		geoinfo     = { ip = "" },
 		selfcheck   = {},
+		dashboard   = {},
 		probe       = {},
 		grouplist    = {},
 		groupadd     = { name = "", macs = "" },
@@ -2100,6 +2181,10 @@ elseif arg[1] == "call" then
 		res = methods.schedeval()
 	elseif name == "probe" then
 		res = methods.probe()
+	elseif name == "dashboard" then
+		res = methods.dashboard()
+		reply_list(res, { "recent", "health_failing" })
+		return
 	elseif name == "selfcheck" then
 		res = methods.selfcheck()
 		reply_list(res, { "checks" })

@@ -44,6 +44,8 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callDashboard = rpc.declare({ object: 'luci.clientblock', method: 'dashboard' });
+
 var callGroupList = rpc.declare({ object: 'luci.clientblock', method: 'grouplist' });
 var callGroupAdd = rpc.declare({ object: 'luci.clientblock', method: 'groupadd', params: ['name', 'macs'] });
 var callGroupDel = rpc.declare({ object: 'luci.clientblock', method: 'groupdel', params: ['id'] });
@@ -274,6 +276,26 @@ var STYLE = `
 .cb-log tr.cb-day td { padding: .7rem .6rem .3rem; font-size: .75rem; font-weight: 600;
 	color: var(--text-muted); border-bottom: 1px solid var(--hairline); border-left: none; }
 .cb-log tr.cb-day td em { font-style: normal; color: var(--brand); }
+
+/* ---- dashboard ---- */
+.cb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+	gap: .7rem; margin-bottom: 1rem; }
+.cb-stat { border: 1px solid var(--hairline); border-radius: .55rem;
+	padding: .75rem .9rem; background: var(--surface); }
+.cb-stat .cb-n { font-size: 1.55rem; font-weight: 700; line-height: 1.15;
+	font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.cb-stat .cb-l { font-size: .75rem; color: var(--text-muted); margin-top: .15rem; }
+.cb-stat.accent .cb-n { color: var(--brand); }
+.cb-stat.ok .cb-n { color: var(--success); }
+.cb-stat.warn .cb-n { color: var(--danger); }
+.cb-dash-rows { display: grid; gap: 0; }
+.cb-dash-row { display: flex; gap: .6rem; align-items: baseline; font-size: .85rem;
+	padding: .34rem 0; border-bottom: 1px solid var(--hairline); }
+.cb-dash-row:last-child { border-bottom: none; }
+.cb-dash-row .cb-k { min-width: 10rem; color: var(--text-muted); }
+.cb-dash-row .cb-v { font-weight: 600; font-family: var(--font-mono); font-size: .82rem; }
+.cb-fail-list { margin-top: .6rem; display: grid; gap: .3rem; }
+.cb-fail-item { font-size: .8rem; color: var(--danger); }
 
 /* ---- schedule ---- */
 .cb-sched-form { display: flex; flex-wrap: wrap; gap: .55rem; align-items: flex-end;
@@ -563,6 +585,101 @@ return view.extend({
 					'style': 'width:auto;padding:0 .6rem',
 					'click': function (ev) { ev.currentTarget.classList.toggle('on'); } }, labels[e] || e));
 			});
+		}
+	},
+
+	refreshDash: function () {
+		var self = this;
+		return callDashboard().then(function (res) {
+			self.dash = res || {};
+			self.renderDash();
+		}).catch(function () { self.renderDash(); });
+	},
+
+	renderDash: function () {
+		var box = document.getElementById('cb-dash-body');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+
+		var d = this.dash || {};
+		var self = this;
+		function card(n, label, cls) {
+			return E('div', { 'class': 'cb-stat' + (cls ? ' ' + cls : '') }, [
+				E('div', { 'class': 'cb-n' }, String(n == null ? '-' : n)),
+				E('div', { 'class': 'cb-l' }, label)
+			]);
+		}
+		function row(k, v) {
+			return E('div', { 'class': 'cb-dash-row' }, [
+				E('span', { 'class': 'cb-k' }, k),
+				E('span', { 'class': 'cb-v' }, String(v))
+			]);
+		}
+
+		box.appendChild(E('div', { 'class': 'cb-stats' }, [
+			card(d.devices_online, _('Devices online'), 'ok'),
+			card(d.devices_blocked, _('Devices blocked'), d.devices_blocked ? 'warn' : ''),
+			card(d.ips_blocked, _('Blocked IPs'), d.ips_blocked ? 'accent' : ''),
+			card(d.logins_fail_today, _('Login failures today'), d.logins_fail_today ? 'warn' : '')
+		]));
+
+		box.appendChild(E('div', { 'class': 'cb-card' }, [
+			E('div', { 'class': 'cb-card-head' }, [
+				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Protection'))
+			]),
+			E('div', { 'class': 'cb-card-body' }, E('div', { 'class': 'cb-dash-rows' }, [
+				row(_('Automatic protection'), d.auto_enabled
+					? (_('on') + ' · ' + (d.threshold || '-') + ' / ' + (d.window || '-') + 's')
+					: _('off')),
+				row(_('Blocked addresses from auto-block'), (d.ips_auto || 0)),
+				row(_('Schedule rules'), (d.schedules || 0) + ' (' + (d.schedules_active || 0) + ' ' + _('active now') + ')'),
+				row(_('Groups'), d.groups || 0),
+				row(_('Port restrictions'), d.ports || 0),
+				row(_('Notification channels'), d.channels || 0),
+				row(_('Logins today'), (d.logins_ok_today || 0) + ' ' + _('ok') + ' · ' + (d.logins_fail_today || 0) + ' ' + _('failed')),
+				row(_('Failures in last 24h'), d.logins_fail_24h || 0)
+			]))
+		]));
+
+		var healthCard = E('div', { 'class': 'cb-card' }, [
+			E('div', { 'class': 'cb-card-head' }, [
+				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Health'))
+			]),
+			E('div', { 'class': 'cb-card-body' }, (function () {
+				var wrap = E('div', {});
+				wrap.appendChild(E('span', { 'class': 'cb-res ' + (d.health_ok ? 'cb-health-ok' : 'cb-health-bad') },
+					d.health_ok ? _('all checks passed') : _('attention needed')));
+				if (!d.health_ok && (d.health_failing || []).length) {
+					var list = E('div', { 'class': 'cb-fail-list' });
+					d.health_failing.forEach(function (c) {
+						list.appendChild(E('div', { 'class': 'cb-fail-item' }, '✕ ' + (c.detail || c.id)));
+					});
+					wrap.appendChild(list);
+				}
+				wrap.appendChild(E('div', { 'style': 'margin-top:.7rem' },
+					E('button', { 'class': 'cb-btn cb-btn-primary',
+						'click': function (ev) { self.refreshDash(); } }, _('Refresh'))));
+				return wrap;
+			})())
+		]);
+		box.appendChild(healthCard);
+
+		if ((d.recent || []).length) {
+			var rl = E('div', { 'class': 'cb-dash-rows' });
+			d.recent.forEach(function (e) {
+				var label = e.result === 'success' ? _('login ok')
+					: (e.result === 'failure' ? _('login failed') : _('session closed'));
+				rl.appendChild(E('div', { 'class': 'cb-dash-row' }, [
+					E('span', { 'class': 'cb-k' }, fmtTime(e.ts)),
+					E('span', { 'class': 'cb-v' }, (e.kind || '') + ' · ' + label)
+				]));
+			});
+			box.appendChild(E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Recent activity'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, rl)
+			]));
 		}
 	},
 
@@ -1304,12 +1421,13 @@ return view.extend({
 
 	switchTab: function (name) {
 		this.tab = name;
-		['devices', 'ips', 'logs', 'sched', 'notify', 'health'].forEach(function (t) {
+		['dash', 'devices', 'ips', 'logs', 'sched', 'notify', 'health'].forEach(function (t) {
 			var pane = document.getElementById('cb-pane-' + t);
 			var btn = document.getElementById('cb-tab-' + t);
 			if (pane) pane.classList.toggle('active', t === name);
 			if (btn) btn.classList.toggle('active', t === name);
 		});
+		if (name === 'dash') return this.refreshDash();
 		if (name === 'ips') return this.refreshIps();
 		if (name === 'logs') return this.refreshLogs();
 		if (name === 'sched') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
@@ -1396,7 +1514,7 @@ return view.extend({
 		this.logResult = 'all';
 		this.query = '';
 		this.ipQuery = '';
-		this.tab = 'devices';
+		this.tab = 'dash';
 		var self = this;
 
 		var search = E('input', {
@@ -1440,14 +1558,23 @@ return view.extend({
 
 		var tabBtn = function (name, label) {
 			return E('button', {
-				'class': 'cb-tab' + (name === 'devices' ? ' active' : ''),
+				'class': 'cb-tab' + (name === 'dash' ? ' active' : ''),
 				'id': 'cb-tab-' + name,
 				'click': function () { self.switchTab(name); }
 			}, label);
 		};
 
-		var devicesPane = E('div', {
+		var dashPane = E('div', {
 			'class': 'cb-pane active',
+			'id': 'cb-pane-dash'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Overview only. No device addresses are shown here; open the Devices tab for the full inventory.')),
+			E('div', { 'id': 'cb-dash-body' })
+		]);
+
+		var devicesPane = E('div', {
+			'class': 'cb-pane',
 			'id': 'cb-pane-devices'
 		}, [
 			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
@@ -1722,6 +1849,7 @@ return view.extend({
 			E('style', {}, STYLE),
 			E('h2', {}, _('Client Access Control')),
 			E('div', { 'class': 'cb-tabs' }, [
+				tabBtn('dash', _('Overview')),
 				tabBtn('devices', _('Devices')),
 				tabBtn('ips', _('External IPs')),
 				tabBtn('logs', _('Login log')),
@@ -1729,6 +1857,7 @@ return view.extend({
 				tabBtn('notify', _('Notifications')),
 				tabBtn('health', _('Health'))
 			]),
+			dashPane,
 			devicesPane,
 			ipsPane,
 			logsPane,
@@ -1738,6 +1867,7 @@ return view.extend({
 		]);
 
 		window.setTimeout(function () {
+			self.renderDash();
 			self.renderTable();
 			self.renderAuto();
 			self.renderLogs();
@@ -1750,6 +1880,7 @@ return view.extend({
 		poll.add(function () {
 			// a hidden tab has no business polling
 			if (document.hidden) return;
+			if (self.tab === 'dash') return self.refreshDash();
 			if (self.tab === 'ips') return self.refreshIps();
 			if (self.tab === 'logs') return self.refreshLogs();
 			if (self.tab === 'sched') return self.refreshSched();

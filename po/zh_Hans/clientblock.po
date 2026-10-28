@@ -69,6 +69,84 @@ msgstr "新设备上线"
 msgid "Block expired"
 msgstr "封禁到期"
 
+msgid "Devices online"
+msgstr "在线设备"
+
+msgid "Devices blocked"
+msgstr "已封禁设备"
+
+msgid "Blocked IPs"
+msgstr "封禁 IP"
+
+msgid "Login failures today"
+msgstr "今日登录失败"
+
+msgid "Protection"
+msgstr "防护状态"
+
+msgid "Automatic protection"
+msgstr "自动防护"
+
+msgid "on"
+msgstr "开启"
+
+msgid "off"
+msgstr "关闭"
+
+msgid "Blocked addresses from auto-block"
+msgstr "自动封禁的地址"
+
+msgid "Schedule rules"
+msgstr "定时规则"
+
+msgid "active now"
+msgstr "当前生效"
+
+msgid "Groups"
+msgstr "分组"
+
+msgid "Port restrictions"
+msgstr "端口限制"
+
+msgid "Notification channels"
+msgstr "通知渠道"
+
+msgid "Logins today"
+msgstr "今日登录"
+
+msgid "ok"
+msgstr "成功"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "Failures in last 24h"
+msgstr "近 24 小时失败"
+
+msgid "Health"
+msgstr "健康检查"
+
+msgid "all checks passed"
+msgstr "全部检查通过"
+
+msgid "attention needed"
+msgstr "需要处理"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "login ok"
+msgstr "登录成功"
+
+msgid "login failed"
+msgstr "登录失败"
+
+msgid "session closed"
+msgstr "会话结束"
+
+msgid "Recent activity"
+msgstr "最近活动"
+
 msgid "Pick a device"
 msgstr "请选择设备"
 
@@ -152,15 +230,6 @@ msgstr "归属地库"
 
 msgid "State storage"
 msgstr "状态存储"
-
-msgid "Automatic protection"
-msgstr "自动防护"
-
-msgid "all checks passed"
-msgstr "全部检查通过"
-
-msgid "attention needed"
-msgstr "需要处理"
 
 msgid "No results yet"
 msgstr "暂无结果"
@@ -273,6 +342,9 @@ msgstr "按 IP 或备注过滤"
 msgid "Note (optional)"
 msgstr "备注（可选）"
 
+msgid "Overview only. No device addresses are shown here; open the Devices tab for the full inventory."
+msgstr "仅显示汇总，不包含任何设备地址；完整清单请打开「设备」页签。"
+
 msgid "Blocked devices lose all traffic through this router: Internet, DNS, DHCP and gateway services. Their packets are dropped at every interface."
 msgstr "被封禁的设备会失去经过本路由器的全部流量：上网、DNS、DHCP 与网关服务，数据包在所有接口上被丢弃。"
 
@@ -293,9 +365,6 @@ msgstr "已丢弃"
 
 msgid "Action"
 msgstr "操作"
-
-msgid "Port restrictions"
-msgstr "端口限制"
 
 msgid "Let a device use the internet but block specific local services, e.g. keep IoT off SMB/445 or telnet."
 msgstr "允许设备上网，但阻断指定的内网服务，例如不让 IoT 设备访问 SMB/445 或 telnet。"
@@ -450,6 +519,9 @@ msgstr "重新检查"
 msgid "Client Access Control"
 msgstr "访问控制"
 
+msgid "Overview"
+msgstr "概览"
+
 msgid "Devices"
 msgstr "设备"
 
@@ -464,7 +536,4 @@ msgstr "定时封禁"
 
 msgid "Notifications"
 msgstr "通知"
-
-msgid "Health"
-msgstr "健康检查"
 
