@@ -11,6 +11,7 @@ start_service() {
 		for i in 1 2 3 4 5 6 7 8 9 10; do
 			if ubus -S call luci.clientblock status >/dev/null 2>&1; then
 				ubus -S call luci.clientblock sync >/dev/null 2>&1
+				ubus -S call luci.clientblock schedeval >/dev/null 2>&1
 				break
 			fi
 			sleep 1

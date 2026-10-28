@@ -44,6 +44,29 @@ var callIpDel = rpc.declare({
 	params: ['ip']
 });
 
+var callSchedList = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'schedlist'
+});
+
+var callSchedAdd = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'schedadd',
+	params: ['mac', 'days', 'start', 'stop', 'name']
+});
+
+var callSchedDel = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'scheddel',
+	params: ['id']
+});
+
+var callSchedToggle = rpc.declare({
+	object: 'luci.clientblock',
+	method: 'schedtoggle',
+	params: ['id', 'enabled']
+});
+
 var callSelfCheck = rpc.declare({
 	object: 'luci.clientblock',
 	method: 'selfcheck'
@@ -235,6 +258,23 @@ var STYLE = `
 	color: var(--text-muted); border-bottom: 1px solid var(--hairline); border-left: none; }
 .cb-log tr.cb-day td em { font-style: normal; color: var(--brand); }
 
+/* ---- schedule ---- */
+.cb-sched-form { display: flex; flex-wrap: wrap; gap: .55rem; align-items: flex-end;
+	padding: .8rem .9rem; border: 1px solid var(--hairline); border-radius: .55rem;
+	background: var(--surface); margin-bottom: 1rem; }
+.cb-sched-form label { display: flex; flex-direction: column; gap: .25rem; }
+.cb-sched-form label > span { font-size: .74rem; color: var(--text-muted); }
+.cb-sched-form select, .cb-sched-form input[type=time] {
+	padding: .35rem .5rem; border-radius: .3rem; border: 1px solid var(--hairline);
+	background: var(--surface-sunken); color: inherit; font-size: .85rem; }
+.cb-days { display: flex; gap: .25rem; }
+.cb-dchip { width: 1.9rem; height: 1.9rem; display: flex; align-items: center; justify-content: center;
+	border: 1px solid var(--hairline); border-radius: .3rem; cursor: pointer;
+	font-size: .78rem; user-select: none; color: var(--text-muted); }
+.cb-dchip.on { background: var(--brand-subtle); border-color: var(--brand); color: var(--text); font-weight: 600; }
+.cb-sched-on { background: var(--danger-surface); color: var(--danger); }
+.cb-sched-idle { background: var(--hover-faint); color: var(--text-muted); }
+
 /* ---- health ---- */
 .cb-health-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .9rem; }
 .cb-health-ok { background: var(--success-surface); color: var(--success); }
@@ -290,12 +330,14 @@ function fmtTime(ts) {
 
 return view.extend({
 	load: function () {
-		return Promise.all([ callList('1'), callIpList(), callAutoGet(), callLogList('500') ]).then(function (r) {
-			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {}, logs = r[3] || {};
+		return Promise.all([ callList('1'), callIpList(), callAutoGet(), callLogList('500'), callSchedList() ])
+			.then(function (r) {
+			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {}, logs = r[3] || {}, sc = r[4] || {};
 			dev.ips = ips.ips || [];
 			dev.ip_count = ips.count || 0;
 			dev.auto = auto;
 			dev.logs = logs.entries || [];
+			dev.sched = sc.rules || [];
 			return dev;
 		});
 	},
@@ -392,6 +434,113 @@ return view.extend({
 			return (d.host || '').toLowerCase().indexOf(q) !== -1 ||
 				(d.ip || '').indexOf(q) !== -1 ||
 				(d.mac || '').toLowerCase().indexOf(q) !== -1;
+		});
+	},
+
+	refreshSched: function () {
+		var self = this;
+		return callSchedList().then(function (res) {
+			self.sched = (res && res.rules) || [];
+			self.renderSched();
+		}).catch(function () { self.renderSched(); });
+	},
+
+	handleSchedAdd: function (ev) {
+		var self = this;
+		var sel = document.getElementById('cb-sched-mac');
+		var st = document.getElementById('cb-sched-start');
+		var sp = document.getElementById('cb-sched-stop');
+		if (!sel || !sel.value) { ui.addNotification(null, E('p', {}, _('Pick a device')), 'warning'); return; }
+		var days = [];
+		document.querySelectorAll('#cb-sched-days .cb-dchip.on').forEach(function (d) {
+			days.push(parseInt(d.getAttribute('data-day'), 10));
+		});
+		if (!days.length) { ui.addNotification(null, E('p', {}, _('Pick at least one day')), 'warning'); return; }
+		if (!st.value || !sp.value) { ui.addNotification(null, E('p', {}, _('Set both times')), 'warning'); return; }
+		if (st.value === sp.value) { ui.addNotification(null, E('p', {}, _('Start and end must differ')), 'warning'); return; }
+
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callSchedAdd(sel.value, days.join(','), st.value, sp.value, sel.options[sel.selectedIndex].text)
+			.then(function (res) {
+				if (res && res.success === false) throw new Error(res.error || _('Failed'));
+				self.sched = (res && res.rules) || [];
+				self.renderSched();
+				return self.refresh();
+			}).catch(function (e) {
+				ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+			}).finally(function () { btn.disabled = false; });
+	},
+
+	handleSchedDel: function (id, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callSchedDel(id).then(function (res) {
+			self.sched = (res && res.rules) || [];
+			self.renderSched();
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		});
+	},
+
+	handleSchedToggle: function (rule, ev) {
+		var self = this;
+		return callSchedToggle(rule.id, rule.enabled ? '0' : '1').then(function (res) {
+			self.sched = (res && res.rules) || [];
+			self.renderSched();
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		});
+	},
+
+	renderSched: function () {
+		var tbody = document.getElementById('cb-sched-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var self = this;
+		var names = [_('Sun'), _('Mon'), _('Tue'), _('Wed'), _('Thu'), _('Fri'), _('Sat')];
+		var list = this.sched || [];
+
+		// device picker options
+		var sel = document.getElementById('cb-sched-mac');
+		if (sel) {
+			var keep = sel.value;
+			while (sel.firstChild) sel.removeChild(sel.firstChild);
+			(this.devices || []).slice().sort(function (a, b) {
+				return String(a.host || a.ip || '').localeCompare(String(b.host || b.ip || ''));
+			}).forEach(function (d) {
+				sel.appendChild(E('option', { 'value': d.mac },
+					(d.host || d.mac) + (d.ip ? '  ' + d.ip : '')));
+			});
+			if (keep) sel.value = keep;
+		}
+
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
+				_('No schedule rules yet'))));
+			return;
+		}
+
+		list.forEach(function (r) {
+			var dayTxt = (r.days || []).map(function (d) { return names[d] || d; }).join(' ');
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-u' }, r.name || r.mac),
+				E('td', { 'style': 'font-size:.8rem' }, dayTxt),
+				E('td', { 'class': 'cb-t' }, (r.start || '') + ' - ' + (r.stop || '')),
+				E('td', {}, E('span', { 'class': 'cb-res ' + (r.active ? 'cb-sched-on' : 'cb-sched-idle') },
+					r.active ? _('blocking now') : (r.enabled ? _('scheduled') : _('disabled')))),
+				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [
+					E('button', { 'class': 'cb-btn', 'style': 'margin-right:.35rem',
+						'click': function (ev) { self.handleSchedToggle(r, ev); } },
+						r.enabled ? _('Pause') : _('Resume')),
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handleSchedDel(r.id, ev); } }, _('Delete'))
+				])
+			]));
 		});
 	},
 
@@ -879,7 +1028,7 @@ return view.extend({
 
 	switchTab: function (name) {
 		this.tab = name;
-		['devices', 'ips', 'logs', 'health'].forEach(function (t) {
+		['devices', 'ips', 'logs', 'sched', 'health'].forEach(function (t) {
 			var pane = document.getElementById('cb-pane-' + t);
 			var btn = document.getElementById('cb-tab-' + t);
 			if (pane) pane.classList.toggle('active', t === name);
@@ -887,6 +1036,7 @@ return view.extend({
 		});
 		if (name === 'ips') return this.refreshIps();
 		if (name === 'logs') return this.refreshLogs();
+		if (name === 'sched') return this.refreshSched();
 		if (name === 'health') return this.refreshHealth();
 	},
 
@@ -963,6 +1113,7 @@ return view.extend({
 		this.ipCount = (data && data.ip_count) || 0;
 		this.auto = (data && data.auto) || {};
 		this.logs = (data && data.logs) || [];
+		this.sched = (data && data.sched) || [];
 		this.logQuery = '';
 		this.logKind = 'all';
 		this.logResult = 'all';
@@ -1142,6 +1293,48 @@ return view.extend({
 			])
 		]);
 
+		var schedPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-sched'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Block a device on a weekly schedule. A window that ends before it starts crosses midnight, and its days refer to the day the window begins.')),
+			E('div', { 'class': 'cb-sched-form' }, [
+				E('label', {}, [
+					E('span', {}, _('Device')),
+					E('select', { 'id': 'cb-sched-mac', 'style': 'min-width:14rem' })
+				]),
+				E('label', {}, [
+					E('span', {}, _('Days')),
+					E('div', { 'class': 'cb-days', 'id': 'cb-sched-days' },
+						['S','M','T','W','T','F','S'].map(function (ch, i) {
+							return E('div', { 'class': 'cb-dchip', 'data-day': String(i),
+								'click': function (ev) { ev.currentTarget.classList.toggle('on'); } }, ch);
+						}))
+				]),
+				E('label', {}, [
+					E('span', {}, _('From')),
+					E('input', { 'type': 'time', 'id': 'cb-sched-start', 'value': '21:00' })
+				]),
+				E('label', {}, [
+					E('span', {}, _('To')),
+					E('input', { 'type': 'time', 'id': 'cb-sched-stop', 'value': '07:00' })
+				]),
+				E('button', { 'class': 'cb-btn cb-btn-primary',
+					'click': function (ev) { self.handleSchedAdd(ev); } }, _('Add rule'))
+			]),
+			E('table', { 'class': 'cb-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('Device')),
+					E('th', {}, _('Days')),
+					E('th', {}, _('Window')),
+					E('th', {}, _('Status')),
+					E('th', { 'style': 'text-align:right' }, _('Action'))
+				])),
+				E('tbody', { 'id': 'cb-sched-tbody' })
+			])
+		]);
+
 		var healthPane = E('div', {
 			'class': 'cb-pane',
 			'id': 'cb-pane-health'
@@ -1163,11 +1356,13 @@ return view.extend({
 				tabBtn('devices', _('Devices')),
 				tabBtn('ips', _('External IPs')),
 				tabBtn('logs', _('Login log')),
+				tabBtn('sched', _('Schedules')),
 				tabBtn('health', _('Health'))
 			]),
 			devicesPane,
 			ipsPane,
 			logsPane,
+			schedPane,
 			healthPane
 		]);
 
@@ -1175,6 +1370,7 @@ return view.extend({
 			self.renderTable();
 			self.renderAuto();
 			self.renderLogs();
+			self.renderSched();
 		}, 0);
 
 		poll.add(function () {
@@ -1182,6 +1378,7 @@ return view.extend({
 			if (document.hidden) return;
 			if (self.tab === 'ips') return self.refreshIps();
 			if (self.tab === 'logs') return self.refreshLogs();
+			if (self.tab === 'sched') return self.refreshSched();
 			if (self.tab === 'health') return self.refreshHealth();
 			return self.refresh();
 		}, 10);

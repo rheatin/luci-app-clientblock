@@ -11,6 +11,7 @@ local STATE_DIR = "/etc/clientblock"
 local STATE_FILE = STATE_DIR .. "/blocked.json"
 local NAME_FILE = STATE_DIR .. "/names.json"
 local IPSTATE_FILE = STATE_DIR .. "/blocked_ips.json"
+local SCHED_FILE = STATE_DIR .. "/schedule.json"
 local LOG_FILE = STATE_DIR .. "/login.log"
 local LOG_MAX = 500
 local AUTOCFG_FILE = STATE_DIR .. "/auto.json"
@@ -1002,7 +1003,7 @@ function methods.autoset(enabled, threshold, window, ttl, ssh_password, ssh_user
 	            web_auth = cfg.web_auth })
 end
 
-function methods.block(mac, host, ip)
+function methods.block(mac, host, ip, source)
 	mac = normalize_mac(mac)
 	if not mac then return err("invalid MAC") end
 	local state = load_state()
@@ -1011,6 +1012,7 @@ function methods.block(mac, host, ip)
 	local prev = state[mac]
 	if host ~= "" and host then remember_name(mac, host) end
 	state[mac] = {
+		source = (source ~= "" and source) or (prev and prev.source) or "manual",
 		since = (prev and prev.since) or os.time(),
 		host = (host ~= "" and host) or (prev and prev.host) or (s and s.host) or (l and l.host) or nil,
 		ip = (ip ~= "" and ip) or (l and l.ip) or (s and s.ip) or (prev and prev.ip) or nil,
@@ -1097,6 +1099,210 @@ local function read_all(path)
 	local d = f:read("*a")
 	f:close()
 	return d
+end
+
+-- ============================================================
+-- Scheduled blocking
+-- ------------------------------------------------------------
+-- A rule blocks a MAC during a weekly window. Windows may cross midnight
+-- (21:00 -> 07:00); in that case the day list refers to the day the window
+-- starts, so "Mon-Fri 21:00-07:00" also covers Saturday morning.
+-- ============================================================
+
+local function load_sched()
+	local f = io.open(SCHED_FILE, "r")
+	if not f then return { seq = 0, rules = {} } end
+	local raw = f:read("*a")
+	f:close()
+	local p = jsonc.parse(raw)
+	if type(p) ~= "table" then return { seq = 0, rules = {} } end
+	p.seq = tonumber(p.seq) or 0
+	if type(p.rules) ~= "table" then p.rules = {} end
+	return p
+end
+
+local function save_sched(sc)
+	fs.mkdirr(STATE_DIR)
+	local f = io.open(SCHED_FILE, "w")
+	if not f then return false end
+	local o = jsonc.stringify(sc)
+	if o == "[]" then o = "{}" end
+	f:write(o)
+	f:close()
+	return true
+end
+
+local function hm_to_min(v)
+	local h, m = tostring(v or ""):match("^(%d%d?):(%d%d)$")
+	if not h then return nil end
+	h, m = tonumber(h), tonumber(m)
+	if h > 23 or m > 59 then return nil end
+	return h * 60 + m
+end
+
+local function norm_days(days)
+	-- rpcd passes arguments as strings, so accept "0,1,2" and "[0,1,2]"
+	if type(days) == "string" then
+		local t = {}
+		for v in days:gmatch("%d+") do t[#t + 1] = tonumber(v) end
+		days = t
+	end
+	local out, seen = {}, {}
+	for _, d in ipairs(days or {}) do
+		d = tonumber(d)
+		if d and d >= 0 and d <= 6 and not seen[d] then
+			seen[d] = true
+			out[#out + 1] = d
+		end
+	end
+	table.sort(out)
+	return out
+end
+
+local function sched_active(rule, now)
+	local s, e = hm_to_min(rule.start), hm_to_min(rule.stop)
+	if not s or not e or s == e then return false end
+	if rule.enabled == false then return false end
+
+	local t = os.date("*t", now)
+	local cur = t.hour * 60 + t.min
+	local wday = tonumber(os.date("%w", now)) or 0    -- 0 = Sunday
+	local days = {}
+	for _, d in ipairs(rule.days or {}) do days[tonumber(d)] = true end
+
+	if s < e then
+		return days[wday] and cur >= s and cur < e
+	end
+	-- crosses midnight
+	if days[wday] and cur >= s then return true end
+	local yday = (wday + 6) % 7
+	return days[yday] and cur < e
+end
+
+local function sched_rule_by_id(sc, id)
+	for i, r in ipairs(sc.rules) do
+		if tostring(r.id) == tostring(id) then return r, i end
+	end
+	return nil
+end
+
+local function sched_public(sc)
+	local now = os.time()
+	local out = {}
+	for _, r in ipairs(sc.rules) do
+		out[#out + 1] = {
+			id = r.id, mac = r.mac, name = r.name,
+			days = r.days, start = r.start, stop = r.stop,
+			enabled = r.enabled ~= false,
+			active = sched_active(r, now),
+		}
+	end
+	return out
+end
+
+function methods.schedlist()
+	local sc = load_sched()
+	return { success = true, running = true, rules = sched_public(sc) }
+end
+
+function methods.schedadd(mac, days, start, stop_, name)
+	mac = normalize_mac(mac)
+	if not mac then return err("invalid MAC") end
+	if not hm_to_min(start) or not hm_to_min(stop_) then
+		return err("time must be HH:MM")
+	end
+	if tostring(start) == tostring(stop_) then
+		return err("start and end must differ")
+	end
+	local nd = norm_days(days)
+	if #nd == 0 then return err("pick at least one day") end
+
+	local sc = load_sched()
+	sc.seq = (tonumber(sc.seq) or 0) + 1
+	local host = (name ~= "" and name) or nil
+	if not host then
+		local l = parse_leases()[mac]
+		local st = parse_static_hosts()[mac]
+		host = (st and st.host) or (l and l.host) or nil
+	end
+	sc.rules[#sc.rules + 1] = {
+		id = sc.seq, mac = mac, name = host,
+		days = nd, start = start, stop = stop_,
+		enabled = true,
+	}
+	if not save_sched(sc) then return err("cannot write schedule") end
+	methods.schedeval()
+	return ok({ id = sc.seq, rules = sched_public(sc) })
+end
+
+function methods.scheddel(id)
+	local sc = load_sched()
+	local r, i = sched_rule_by_id(sc, id)
+	if not r then return err("no such rule") end
+	table.remove(sc.rules, i)
+	if not save_sched(sc) then return err("cannot write schedule") end
+	methods.schedeval()
+	return ok({ rules = sched_public(sc) })
+end
+
+function methods.schedtoggle(id, enabled)
+	local sc = load_sched()
+	local r = sched_rule_by_id(sc, id)
+	if not r then return err("no such rule") end
+	r.enabled = (enabled == true or enabled == "1" or enabled == 1 or enabled == "true")
+	save_sched(sc)
+	methods.schedeval()
+	return ok({ rules = sched_public(sc) })
+end
+
+-- Reconcile the firewall with the schedule. Only touches entries this feature
+-- created (source == "schedule"), so manual blocks are never undone.
+function methods.schedeval()
+	local sc = load_sched()
+	local now = os.time()
+	local want = {}
+	for _, r in ipairs(sc.rules) do
+		if sched_active(r, now) then want[r.mac] = r.name end
+	end
+
+	local state = load_state()
+	local leases, statics
+	local changed = false
+
+	for mac, nm in pairs(want) do
+		if state[mac] == nil then
+			leases = leases or parse_leases()
+			statics = statics or parse_static_hosts()
+			local l, st = leases[mac], statics[mac]
+			state[mac] = {
+				since = now, source = "schedule",
+				host = (st and st.host) or (l and l.host) or nm or nil,
+				ip = (l and l.ip) or (st and st.ip) or nil,
+			}
+			changed = true
+		end
+	end
+	for mac, meta in pairs(state) do
+		if meta.source == "schedule" and not want[mac] then
+			state[mac] = nil
+			changed = true
+		end
+	end
+
+	if changed then
+		save_state(state)
+		if next(state) == nil and next(load_ipstate()) == nil then
+			fs.unlink(RULE_FILE)
+		else
+			render_rules(state)
+		end
+		reload_firewall()
+	end
+
+	local active = 0
+	for _ in pairs(want) do active = active + 1 end
+	return { success = true, running = true, changed = changed, active = active,
+	         blocked = (function() local n = 0 for _ in pairs(state) do n = n + 1 end return n end)() }
 end
 
 -- End-to-end probe: write a synthetic LuCI login line, wait for the watcher to
@@ -1280,7 +1486,7 @@ if arg[1] == "list" then
 	local s2 = jsonc.stringify({
 		list        = {},
 		status      = {},
-		block       = { mac = "", host = "", ip = "" },
+		block       = { mac = "", host = "", ip = "", source = "" },
 		unblock     = { mac = "" },
 		unblock_all = {},
 		rename      = { mac = "", name = "" },
@@ -1293,6 +1499,11 @@ if arg[1] == "list" then
 		geoinfo     = { ip = "" },
 		selfcheck   = {},
 		probe       = {},
+		schedlist   = {},
+		schedadd    = { mac = "", days = "", start = "", stop = "", name = "" },
+		scheddel    = { id = "" },
+		schedtoggle = { id = "", enabled = "" },
+		schedeval   = {},
 		logevent    = { epoch = "", kind = "", result = "", ip = "", user = "", detail = "" },
 		loglist     = { limit = "" },
 		logclear    = {},
@@ -1312,7 +1523,7 @@ elseif arg[1] == "call" then
 	elseif name == "status" then
 		res = methods.status()
 	elseif name == "block" then
-		res = methods.block(req.mac, req.host, req.ip)
+		res = methods.block(req.mac, req.host, req.ip, req.source)
 	elseif name == "unblock" then
 		res = methods.unblock(req.mac)
 	elseif name == "unblock_all" then
@@ -1340,6 +1551,18 @@ elseif arg[1] == "call" then
 		return
 	elseif name == "logclear" then
 		res = methods.logclear()
+	elseif name == "schedlist" then
+		res = methods.schedlist()
+		reply_list(res, { "rules" })
+		return
+	elseif name == "schedadd" then
+		res = methods.schedadd(req.mac, req.days, req.start, req.stop, req.name)
+	elseif name == "scheddel" then
+		res = methods.scheddel(req.id)
+	elseif name == "schedtoggle" then
+		res = methods.schedtoggle(req.id, req.enabled)
+	elseif name == "schedeval" then
+		res = methods.schedeval()
 	elseif name == "probe" then
 		res = methods.probe()
 	elseif name == "selfcheck" then

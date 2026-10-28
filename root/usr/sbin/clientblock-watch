@@ -122,8 +122,19 @@ main() {
 	mkfifo "$PIPE" 2>/dev/null || { logger -t "$LOG_TAG" "cannot create fifo"; exit 1; }
 	logread -f > "$PIPE" 2>/dev/null &
 	LRPID=$!
+
+	# Reconcile scheduled blocks once a minute. Runs in a child so it cannot
+	# block the log reader; the trap below takes it down with us.
+	(
+		while :; do
+			ubus -S call luci.clientblock schedeval >/dev/null 2>&1
+			sleep 55
+		done
+	) &
+	SCHEDPID=$!
+
 	# shellcheck disable=SC2064
-	trap 'kill $LRPID 2>/dev/null; rm -f "$PIPE" "$PIDFILE"' EXIT INT TERM
+	trap 'kill $LRPID $SCHEDPID 2>/dev/null; rm -f "$PIPE" "$PIDFILE"' EXIT INT TERM
 	exec 3< "$PIPE"
 
 	while IFS= read -r line <&3; do
