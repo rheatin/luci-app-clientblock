@@ -677,6 +677,25 @@ function methods.feeddel(id)
 	return ok({})
 end
 
+-- A subscription must never be able to block the local network itself.
+local function feed_skip(ip)
+	local a, b = ip:match("^(%d+)%.(%d+)%.")
+	if a then
+		a, b = tonumber(a), tonumber(b)
+		if a == 0 or a == 10 or a == 127 then return true end
+		if a == 172 and b >= 16 and b <= 31 then return true end
+		if a == 192 and b == 168 then return true end
+		if a == 169 and b == 254 then return true end
+		if a == 100 and b >= 64 and b <= 127 then return true end
+		if a >= 224 then return true end          -- multicast / reserved
+		return false
+	end
+	if ip == "::1" or ip:match("^fe80") or ip:match("^f[cd]") or ip:match("^ff") then
+		return true
+	end
+	return false
+end
+
 -- Fetch one feed and merge its addresses. Returns the number added/removed.
 function methods.feedrefresh(id)
 	local f = load_feeds()
@@ -692,11 +711,17 @@ function methods.feedrefresh(id)
 	fs.unlink(tmp)
 	if not raw or raw == "" then return err("download failed") end
 
+	-- Feeds in the wild are not uniform: netsets put one CIDR per line,
+	-- Spamhaus appends "; SBL123", some providers emit CSV, others ship a
+	-- hosts file. Take every token that parses as an address and ignore the
+	-- rest, so one list does not need a bespoke parser.
 	local wanted = {}
 	for line in raw:gmatch("[^\n]+") do
-		line = line:gsub("#.*$", ""):gsub("%s", "")
-		local norm = normalize_ip(line)
-		if norm and not norm:find(":") then wanted[norm] = true end
+		line = line:gsub("#.*$", ""):gsub("//.*$", "")
+		for tok in line:gmatch("[^%s,;\t]+") do
+			local norm = normalize_ip(tok)
+			if norm and not feed_skip(norm) then wanted[norm] = true end
+		end
 	end
 
 	local ips = load_ipstate()
@@ -870,10 +895,16 @@ end
 -- fw4 redefines these objects from RULE_FILE; a stale object left behind by a
 -- failed reload makes every later reload fail with "File exists".
 local function unload_rules()
-	sys.call("nft delete set inet fw4 blocked_ip4 >/dev/null 2>&1; " ..
-	         "nft delete set inet fw4 blocked_ip6 >/dev/null 2>&1; " ..
-	         "nft delete chain inet fw4 user_ip_input >/dev/null 2>&1; " ..
-	         "nft delete chain inet fw4 user_ip_forward >/dev/null 2>&1")
+	-- Order matters: nft refuses to delete a set while a chain still has a
+	-- rule pointing at it ("Resource busy"), and a set that survives keeps
+	-- every element ever added to it. Deleting the chains first is what makes
+	-- an unblock actually take effect.
+	sys.call("nft delete chain inet fw4 user_ip_input >/dev/null 2>&1; " ..
+	         "nft delete chain inet fw4 user_ip_forward >/dev/null 2>&1; " ..
+	         "nft delete chain inet fw4 user_pre_input >/dev/null 2>&1; " ..
+	         "nft delete chain inet fw4 user_pre_forward >/dev/null 2>&1; " ..
+	         "nft delete set inet fw4 blocked_ip4 >/dev/null 2>&1; " ..
+	         "nft delete set inet fw4 blocked_ip6 >/dev/null 2>&1")
 end
 
 -- Runtime element updates avoid the ~6 s fw4 reload. Returns true when the
@@ -1407,7 +1438,9 @@ function methods.ipdel(ip)
 	st[norm] = nil
 	save_ipstate(st)
 	render_rules(load_state())
-	set_element_live(norm, false)
+	-- the live delete only works when the set is present; otherwise rebuild,
+	-- or the address stays blocked despite having been released
+	if not set_element_live(norm, false) then reload_firewall() end
 	-- forget its recent failures so a manual release is not undone by the
 	-- next scan replaying the same log lines
 	local sc = load_scan()
