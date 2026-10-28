@@ -16,6 +16,12 @@ OpenWrt 客户端访问控制插件（LuCI）。一个页面管两件事：**拉
 | **自动防护** | 实时监听 syslog，登录失败达到阈值即封禁，**秒级响应** |
 | **可重命名** | 设备名称持久化，解禁再拉黑不丢 |
 | **登录日志** | 记录每一次 SSH / LuCI 登录（成功、失败、断开），含来源归属，保留 500 条 |
+| **定时封禁** | 每设备按星期的时段封禁，支持跨午夜 |
+| **临时封禁** | 1 小时 / 8 小时 / 到明早，到期自动解封 |
+| **分组与宵禁** | 家人 / 孩子 / IoT 分组，一键把整组封到次日 08:00 |
+| **端口限制** | 允许上网但封掉指定端口（如 IoT 不能访问 SMB/445） |
+| **通知** | Telegram / Bark / Webhook，自动封禁、新设备、封禁到期 |
+| **健康检查** | 八项自检 + 端到端探针，失败直接给修复命令 |
 | **丢包统计** | 每条规则显示实际丢弃的包数与字节数 |
 | **开机自愈** | 重启后从状态文件重建 nftables 规则 |
 
@@ -191,6 +197,14 @@ ubus call luci.clientblock rename  '{"mac":"aa:bb:cc:dd:ee:ff","name":"新名字
 ubus call luci.clientblock autoget
 ubus call luci.clientblock autoset '{"enabled":"1","threshold":"5","window":"600","ttl":"86400"}'
 ubus call luci.clientblock scan
+ubus call luci.clientblock tick          # 每分钟由服务调用：调度 + 到期
+ubus call luci.clientblock block '{"mac":"aa:bb:cc:dd:ee:ff","minutes":"60"}'
+ubus call luci.clientblock curfew '{"id":"1"}'
+ubus call luci.clientblock portadd '{"mac":"aa:bb:cc:dd:ee:ff","proto":"tcp","port":"445"}'
+ubus call luci.clientblock grouplist
+ubus call luci.clientblock notifyget
+ubus call luci.clientblock selfcheck
+ubus call luci.clientblock probe
 
 # 登录日志
 ubus call luci.clientblock loglist '{"limit":"100"}'
@@ -232,6 +246,63 @@ ubus call luci.clientblock logclear
 该数据库随 **Lucky** 附带。若未安装 Lucky，从 [ip2region releases](https://github.com/lionsoul2014/ip2region/releases) 取 `ip2region_v4.xdb` 放到上述任一位置即可。
 
 ---
+
+## 临时封禁
+
+设备行提供时长选择：`永久 / 1 小时 / 8 小时 / 到明早 08:00`。
+临时封禁带 `expires` 字段，由常驻服务每分钟扫描，到期自动解封并可选推送通知。
+永久封禁不带该字段，永远不会被自动解除。
+
+## 分组与宵禁
+
+在 **定时封禁 → 分组与宵禁** 里新建分组（如 `Kids`、`IoT`），用多选框勾选成员。
+
+- **宵禁**：把整组封到次日 08:00，来源标记为 `curfew`
+- 与临时封禁共用同一套到期引擎，到点自动恢复
+
+## 端口限制
+
+在 **设备 → 端口限制** 里添加规则：设备 + 协议 + 端口。
+
+```
+ether saddr <MAC> tcp dport 445 counter drop
+```
+
+典型用法：让 IoT 设备只能上网，不能访问 NAS 的 SMB(445)、路由器的 telnet(23)。
+与整机封禁不同，端口限制只断特定服务。
+
+## 通知
+
+支持三种渠道，各自独立，某个渠道失败不影响动作本身：
+
+| 渠道 | 配置 |
+|---|---|
+| Telegram | Bot Token + Chat ID |
+| Bark | 完整推送 URL，如 `https://api.day.app/KEY` |
+| Webhook | 任意 URL，POST JSON：`{event,title,body,ts}` |
+
+可订阅的事件：**自动封禁**、**新设备上线**、**封禁到期**。每个渠道有「测试」按钮。
+新设备检测首次运行时会静默建立基线，不会把已有设备全部报成新设备。
+
+## 健康检查
+
+八项实时检查，失败时直接给出修复命令：
+
+服务进程 · 日志管道 · 生成的规则 · 内核 IP 集合 · 防火墙规则 ·
+归属地库 · 状态存储 · 自动防护
+
+外加 **端到端探针**：写一条伪造登录行，等 watcher 记录后再删除。
+这是唯一能证明「syslog → 存储」整条链路可用的检查。
+
+## 中文界面
+
+界面已提供完整中文翻译（154 条），随 `luci-i18n-clientblock-zh_Hans` 包发布：
+
+```sh
+apk add --allow-untrusted ./luci-i18n-clientblock-*_zh_Hans.apk
+```
+
+未安装时界面回退到英文，不影响功能。
 
 ## 已知限制
 
