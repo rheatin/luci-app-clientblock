@@ -1360,15 +1360,46 @@ function methods.logclear()
 	return ok({})
 end
 
-function methods.iplist(limit)
+-- Block-list categories. The stored `source` is coarser than what the table
+-- needs to show: an automatic ban is worth splitting into SSH brute force and
+-- web brute force, and a subscription entry should carry the feed it came from.
+local IP_CATS = { "feed", "ssh", "web", "auto", "manual", "schedule", "panic", "import", "other" }
+
+local function ip_category(meta)
+	local src = tostring(meta.source or "manual")
+	if src == "feed" then return "feed" end
+	if src == "auto" then
+		local r = tostring(meta.reason or "")
+		if r == "ssh" or r == "web" then return r end
+		return "auto"
+	end
+	if src == "schedule" then return "schedule" end
+	if src == "panic" then return "panic" end
+	if src == "watchdog" then return "import" end
+	if src == "manual" then return "manual" end
+	return "other"
+end
+
+function methods.iplist(limit, cat)
 	local st = load_ipstate()
 	local total = 0
-	for _ in pairs(st) do total = total + 1 end
-	limit = tonumber(limit) or 300
+	limit = tonumber(limit) or 0
+	if limit <= 0 then limit = 500 end        -- 0 means "whatever fits"
+	if limit > 2000 then limit = 2000 end
+	cat = tostring(cat or "")
 
 	local ctr = ip_counters()
 	local list = {}
+	local counts = {}
+	-- a subscription entry should name the list it came from, not its id
+	local feedname = {}
+	local fl = load_feeds()
+	for _, fd in ipairs(fl.feeds or {}) do feedname[tostring(fd.id)] = fd.name end
 	for ip, meta in pairs(st) do
+		local c = ip_category(meta)
+		counts[c] = (counts[c] or 0) + 1
+		total = total + 1
+		if cat == "" or cat == c then
 		local inb = ctr["clientblock-ip-in"] or ctr["clientblock-ip6-in"] or { packets = 0, bytes = 0 }
 		local outb = ctr["clientblock-ip-out"] or ctr["clientblock-ip6-out"] or { packets = 0, bytes = 0 }
 		list[#list + 1] = {
@@ -1381,7 +1412,10 @@ function methods.iplist(limit)
 			evidence = meta.evidence,
 			drop_packets = inb.packets + outb.packets,
 			drop_bytes = inb.bytes + outb.bytes,
+			category = c,
+			feed_name = meta.feed and feedname[tostring(meta.feed)] or nil,
 		}
+		end
 	end
 	table.sort(list, function(a, b) return (a.since or 0) > (b.since or 0) end)
 
@@ -1395,8 +1429,14 @@ function methods.iplist(limit)
 		end
 		shown[i] = e
 	end
+	local cats = {}
+	for _, k in ipairs(IP_CATS) do
+		if (counts[k] or 0) > 0 then cats[#cats + 1] = { key = k, count = counts[k] } end
+	end
+
 	return { success = true, running = true, ips = shown, count = total,
-	         shown = #shown, rule_file = RULE_FILE }, true
+	         shown = #shown, matched = #list, category = cat,
+	         categories = cats, rule_file = RULE_FILE }, true
 end
 
 -- fast=true skips the persistent rule rewrite and only touches the live set,
@@ -1489,6 +1529,17 @@ local function save_scan(sc)
 	return true
 end
 
+-- Tell an SSH brute force from a web one: both end up in the same counter,
+-- but the table wants to show which door was being kicked.
+local function fail_reason(line)
+	if line:find("dropbear", 1, true) then return "ssh" end
+	if line:find("luci", 1, true) or line:find("uhttpd", 1, true)
+		or line:find("nginx", 1, true) or line:find("rpc", 1, true) then
+		return "web"
+	end
+	return "auto"
+end
+
 -- Pull the handful of log lines that indicate a failed login attempt and
 -- return { ip = hits } for this window.
 local function scan_failures(cfg)
@@ -1539,7 +1590,8 @@ local function scan_failures(cfg)
 							if h then
 								h.count = (tonumber(h.count) or 0) + 1
 							else
-								sc.hits[norm] = { count = 1, first = now }
+								sc.hits[norm] = { count = 1, first = now,
+									reason = fail_reason(line), line = line:sub(1, 240) }
 							end
 						end
 					end
@@ -1557,6 +1609,8 @@ local function scan_failures(cfg)
 				since = now,
 				note = string.format("auto: %d failed logins", h.count),
 				source = "auto",
+				reason = h.reason,
+				evidence = h.line,
 			}
 			banned[#banned + 1] = ip
 		end
@@ -2689,7 +2743,7 @@ if arg[1] == "list" then
 		unblock_all = {},
 		rename      = { mac = "", name = "" },
 		sync        = {},
-		iplist      = { limit = "" },
+		iplist      = { limit = "", cat = "" },
 		ipadd       = { ip = "", note = "", source = "", fast = "", evidence = "" },
 		ipdel       = { ip = "" },
 		ipflush     = {},
@@ -2765,7 +2819,7 @@ elseif arg[1] == "call" then
 	elseif name == "sync" then
 		res = methods.sync()
 	elseif name == "iplist" then
-		res = methods.iplist(req.limit)
+		res = methods.iplist(req.limit, req.cat)
 		reply_list(res, { "ips" })
 		return
 	elseif name == "ipadd" then
