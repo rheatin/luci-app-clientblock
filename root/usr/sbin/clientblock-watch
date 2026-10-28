@@ -62,8 +62,11 @@ count_ip() {
 	[ -n "$cnt" ] || cnt=0
 
 	if [ "$cnt" -ge "$th" ]; then
+		# keep the offending log line as evidence, with quotes stripped so it
+		# stays valid inside the JSON payload
+		ev=$(printf '%s' "$line" | tr -d '"\\' | cut -c1-200)
 		if ubus call luci.clientblock ipadd \
-			"{\"ip\":\"$ip\",\"note\":\"auto: $cnt $kind failures\",\"source\":\"auto\",\"fast\":\"1\"}" \
+			"{\"ip\":\"$ip\",\"note\":\"auto: $cnt $kind failures\",\"source\":\"auto\",\"fast\":\"1\",\"evidence\":\"$ev\"}" \
 			>/dev/null 2>&1; then
 			logger -t "$LOG_TAG" "blocked $ip after $cnt $kind failures"
 			# reset the counter so the same burst does not re-trigger

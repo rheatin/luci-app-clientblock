@@ -15,6 +15,10 @@ local SCHED_FILE = STATE_DIR .. "/schedule.json"
 local NOTIFY_FILE = STATE_DIR .. "/notify.json"
 local GROUPS_FILE = STATE_DIR .. "/groups.json"
 local PORTS_FILE = STATE_DIR .. "/ports.json"
+local WL_FILE = STATE_DIR .. "/whitelist.json"
+local PANIC_FILE = STATE_DIR .. "/panic.json"
+local FEEDS_FILE = STATE_DIR .. "/feeds.json"
+local PENDING_FILE = STATE_DIR .. "/pending.json"
 local KNOWN_FILE = STATE_DIR .. "/known_devices.json"
 local NOTIFY_TMP = "/tmp/clientblock-notify.json"
 local LOG_FILE = STATE_DIR .. "/login.log"
@@ -25,6 +29,14 @@ local WD_BLACKLIST = "/usr/share/watchdog/api/ip_blacklist"
 local RULE_FILE = "/etc/nftables.d/90-clientblock.nft"
 local LEASE_FILE = "/tmp/dhcp.leases"
 local NEIGH_CMD = "ip -4 neigh show dev br-lan 2>/dev/null"
+
+local methods = {}
+local _known_cache
+local ok, err, read_all, shq
+local parse_leases, parse_neigh, parse_static_hosts
+local render_rules, reload_firewall, load_json_map, save_json_map
+local split_macs, load_ports
+
 
 local function trim(s)
 	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -216,9 +228,402 @@ local function sorted_keys(t)
 	return keys
 end
 
+-- ============================================================
+-- Whitelist, panic mode, trends, port templates, feeds, export/import
+-- ============================================================
+
+local function load_wl()
+	local w = load_json_map(WL_FILE, function() return { macs = {} } end)
+	if type(w.macs) ~= "table" then w.macs = {} end
+	return w
+end
+
+local function wl_has(mac)
+	for _, m in ipairs(load_wl().macs) do
+		if m == mac then return true end
+	end
+	return false
+end
+
+function methods.knownadd(mac)
+	mac = normalize_mac(mac)
+	if not mac then return err("invalid MAC") end
+	local known = load_json_map(KNOWN_FILE, function() return {} end)
+	known[mac] = true
+	save_json_map(KNOWN_FILE, known)
+	local pending = load_json_map(PENDING_FILE, function() return {} end)
+	pending[mac] = nil
+	save_json_map(PENDING_FILE, pending)
+	-- accepting a device also clears any block it may have
+	local st = load_state()
+	if st[mac] then
+		st[mac] = nil
+		save_state(st)
+		render_rules(st)
+		reload_firewall()
+	end
+	return ok({})
+end
+
+function methods.knownlist()
+	local known = load_json_map(KNOWN_FILE, function() return {} end)
+	local pending = load_json_map(PENDING_FILE, function() return {} end)
+	local out = {}
+	for mac, p in pairs(pending) do
+		if not known[mac] then
+			out[#out + 1] = { mac = mac, ip = p.ip, host = p.host, first = p.first }
+		end
+	end
+	local n = 0
+	for _ in pairs(known) do n = n + 1 end
+	return { success = true, running = true, trusted = n, pending = out, pending_count = #out }
+end
+
+function methods.wllist()
+	local w = load_wl()
+	local leases = parse_leases()
+	local statics = parse_static_hosts()
+	local out = {}
+	for _, mac in ipairs(w.macs) do
+		out[#out + 1] = { mac = mac,
+			host = (statics[mac] and statics[mac].host) or (leases[mac] and leases[mac].host) or nil,
+			ip = (leases[mac] and leases[mac].ip) or (statics[mac] and statics[mac].ip) or nil }
+	end
+	return { success = true, running = true, macs = out, count = #w.macs }
+end
+
+function methods.wladd(mac)
+	mac = normalize_mac(mac)
+	if not mac then return err("invalid MAC") end
+	local w = load_wl()
+	if not wl_has(mac) then w.macs[#w.macs + 1] = mac end
+	save_json_map(WL_FILE, w)
+	-- a trusted device must not stay blocked
+	local st = load_state()
+	if st[mac] then
+		st[mac] = nil
+		save_state(st)
+		render_rules(st)
+		reload_firewall()
+	end
+	return ok({ count = #w.macs })
+end
+
+function methods.wldel(mac)
+	mac = normalize_mac(mac)
+	if not mac then return err("invalid MAC") end
+	local w = load_wl()
+	local keep = {}
+	for _, m in ipairs(w.macs) do if m ~= mac then keep[#keep + 1] = m end end
+	w.macs = keep
+	save_json_map(WL_FILE, w)
+	return ok({ count = #keep })
+end
+
+-- ---- panic mode: block every device that is not trusted -----------------
+local function load_panic()
+	local p = load_json_map(PANIC_FILE, function() return { on = false } end)
+	return p
+end
+
+function methods.panicstate()
+	local p = load_panic()
+	local n = 0
+	for _, meta in pairs(load_state()) do
+		if meta.source == "panic" then n = n + 1 end
+	end
+	return { success = true, running = true, on = p.on and true or false,
+	         since = p.since, blocked = n }
+end
+
+function methods.panic(on_v)
+	local on = (on_v == true or on_v == "1" or on_v == 1 or on_v == "true")
+	local state = load_state()
+	local wl = load_wl()
+	local trusted = {}
+	for _, m in ipairs(wl.macs) do trusted[m] = true end
+	local p = load_panic()
+	local changed = false
+	local count = 0
+
+	if on then
+		local leases = parse_leases()
+		local statics = parse_static_hosts()
+		local known = load_json_map(KNOWN_FILE, function() return {} end)
+		for mac in pairs(parse_neigh()) do
+			-- only devices outside the trusted baseline are affected; a device
+			-- that has been accepted is never blocked by this action
+			if not known[mac] and not trusted[mac] and state[mac] == nil then
+				state[mac] = {
+					since = os.time(), source = "panic",
+					host = (statics[mac] and statics[mac].host) or (leases[mac] and leases[mac].host) or nil,
+					ip = (leases[mac] and leases[mac].ip) or (statics[mac] and statics[mac].ip) or nil,
+				}
+				changed = true
+			end
+		end
+		p.on = true
+		p.since = p.since or os.time()
+	else
+		for mac, meta in pairs(state) do
+			if meta.source == "panic" then state[mac] = nil; changed = true end
+		end
+		p.on = false
+		p.since = nil
+	end
+	for _, meta in pairs(state) do if meta.source == "panic" then count = count + 1 end end
+
+	save_json_map(PANIC_FILE, p)
+	if changed then
+		save_state(state)
+		if next(state) == nil and next(load_ipstate()) == nil then
+			fs.unlink(RULE_FILE)
+		else
+			render_rules(state)
+		end
+		reload_firewall()
+	end
+	return { success = true, running = true, on = p.on, blocked = count }
+end
+
+-- ---- trends from the login log -----------------------------------------
+function methods.trend()
+	local now = os.time()
+	local buckets = {}          -- hour index -> {ok,fail}
+	local days = {}
+	local f = io.open(LOG_FILE, "r")
+	if f then
+		for line in f:lines() do
+			local ts, result = line:match("^(%d+)|[^|]*|([^|]*)")
+			if ts then
+				ts = tonumber(ts)
+				if ts and ts >= now - 7 * 86400 then
+					local hk = math.floor((now - ts) / 3600)
+					if hk < 24 then
+						buckets[hk] = buckets[hk] or { ok = 0, fail = 0 }
+						if result == "success" then buckets[hk].ok = buckets[hk].ok + 1
+						elseif result == "failure" then buckets[hk].fail = buckets[hk].fail + 1 end
+					end
+					local t = os.date("*t", ts)
+					local dk = string.format("%04d-%02d-%02d", t.year, t.month, t.day)
+					days[dk] = days[dk] or { ok = 0, fail = 0 }
+					if result == "success" then days[dk].ok = days[dk].ok + 1
+					elseif result == "failure" then days[dk].fail = days[dk].fail + 1 end
+				end
+			end
+		end
+		f:close()
+	end
+
+	local hourly = {}
+	for i = 23, 0, -1 do
+		local b = buckets[i] or { ok = 0, fail = 0 }
+		hourly[#hourly + 1] = { ago = i, ok = b.ok, fail = b.fail }
+	end
+	local daily = {}
+	for i = 6, 0, -1 do
+		local ts = now - i * 86400
+		local t = os.date("*t", ts)
+		local dk = string.format("%04d-%02d-%02d", t.year, t.month, t.day)
+		local b = days[dk] or { ok = 0, fail = 0 }
+		daily[#daily + 1] = { day = dk, ok = b.ok, fail = b.fail }
+	end
+	return { success = true, running = true, hourly = hourly, daily = daily }
+end
+
+-- ---- port presets ------------------------------------------------------
+local PORT_PRESETS = {
+	iot = { { "tcp", 23 }, { "tcp", 445 }, { "tcp", 3389 }, { "tcp", 8080 } },
+	smb = { { "tcp", 445 }, { "tcp", 139 } },
+	remote = { { "tcp", 22 }, { "tcp", 3389 }, { "tcp", 5900 } },
+}
+
+function methods.portpresets()
+	local out = {}
+	for name, list in pairs(PORT_PRESETS) do
+		local ports = {}
+		for _, p in ipairs(list) do ports[#ports + 1] = p[1] .. "/" .. p[2] end
+		out[#out + 1] = { name = name, ports = table.concat(ports, " ") }
+	end
+	return { success = true, running = true, presets = out }
+end
+
+function methods.porttemplate(macs, preset)
+	local list = PORT_PRESETS[tostring(preset or "")]
+	if not list then return err("unknown preset") end
+	local targets = split_macs(macs)
+	if #targets == 0 then return err("no devices selected") end
+	local p = load_ports()
+	local added = 0
+	for _, mac in ipairs(targets) do
+		for _, pr in ipairs(list) do
+			local dup = false
+			for _, r in ipairs(p.rules) do
+				if r.mac == mac and r.proto == pr[1] and tonumber(r.port) == pr[2] then dup = true end
+			end
+			if not dup then
+				p.seq = (tonumber(p.seq) or 0) + 1
+				p.rules[#p.rules + 1] = { id = p.seq, mac = mac, proto = pr[1],
+				                          port = pr[2], note = "preset:" .. preset, enabled = true }
+				added = added + 1
+			end
+		end
+	end
+	save_json_map(PORTS_FILE, p)
+	render_rules(load_state())
+	reload_firewall()
+	return ok({ added = added })
+end
+
+-- ---- external blacklist feeds -----------------------------------------
+local function load_feeds()
+	local f = load_json_map(FEEDS_FILE, function() return { seq = 0, feeds = {} } end)
+	f.seq = tonumber(f.seq) or 0
+	if type(f.feeds) ~= "table" then f.feeds = {} end
+	return f
+end
+
+function methods.feedlist()
+	local f = load_feeds()
+	local ips = load_ipstate()
+	local counts = {}
+	for _, meta in pairs(ips) do
+		local id = tostring(meta.feed or "")
+		if id ~= "" then counts[id] = (counts[id] or 0) + 1 end
+	end
+	local out = {}
+	for _, fd in ipairs(f.feeds) do
+		out[#out + 1] = { id = fd.id, name = fd.name, url = fd.url,
+		                  enabled = fd.enabled ~= false, imported = counts[tostring(fd.id)] or 0,
+		                  last = fd.last, last_count = fd.last_count }
+	end
+	return { success = true, running = true, feeds = out }
+end
+
+function methods.feedadd(name, url)
+	if tostring(url or "") == "" then return err("url required") end
+	local f = load_feeds()
+	f.seq = (tonumber(f.seq) or 0) + 1
+	f.feeds[#f.feeds + 1] = { id = f.seq, name = (name ~= "" and name) or tostring(url),
+	                          url = url, enabled = true }
+	save_json_map(FEEDS_FILE, f)
+	return ok({ id = f.seq })
+end
+
+function methods.feeddel(id)
+	local f = load_feeds()
+	local keep, removed = {}, false
+	for _, fd in ipairs(f.feeds) do
+		if tostring(fd.id) == tostring(id) then removed = true else keep[#keep + 1] = fd end
+	end
+	if not removed then return err("no such feed") end
+	f.feeds = keep
+	save_json_map(FEEDS_FILE, f)
+	-- drop everything this feed contributed
+	local ips = load_ipstate()
+	for ip, meta in pairs(ips) do
+		if tostring(meta.feed or "") == tostring(id) then ips[ip] = nil end
+	end
+	save_ipstate(ips)
+	render_rules(load_state())
+	reload_firewall()
+	return ok({})
+end
+
+-- Fetch one feed and merge its addresses. Returns the number added/removed.
+function methods.feedrefresh(id)
+	local f = load_feeds()
+	local fd
+	for _, x in ipairs(f.feeds) do
+		if tostring(x.id) == tostring(id) then fd = x end
+	end
+	if not fd then return err("no such feed") end
+
+	local tmp = "/tmp/clientblock-feed.txt"
+	sys.call(string.format("curl -fsSL -m 25 -o %s %s", tmp, shq(fd.url)))
+	local raw = read_all(tmp)
+	fs.unlink(tmp)
+	if not raw or raw == "" then return err("download failed") end
+
+	local wanted = {}
+	for line in raw:gmatch("[^\n]+") do
+		line = line:gsub("#.*$", ""):gsub("%s", "")
+		local norm = normalize_ip(line)
+		if norm and not norm:find(":") then wanted[norm] = true end
+	end
+
+	local ips = load_ipstate()
+	local added, removed = 0, 0
+	for ip, meta in pairs(ips) do
+		if tostring(meta.feed or "") == tostring(id) and not wanted[ip] then
+			ips[ip] = nil
+			removed = removed + 1
+		end
+	end
+	for ip in pairs(wanted) do
+		if ips[ip] == nil then
+			ips[ip] = { since = os.time(), note = "feed: " .. fd.name,
+			            source = "feed", feed = tostring(id) }
+			added = added + 1
+		end
+	end
+
+	fd.last = os.time()
+	fd.last_count = added
+	save_json_map(FEEDS_FILE, f)
+	save_ipstate(ips)
+	render_rules(load_state())
+	reload_firewall()
+	return { success = true, running = true, added = added, removed = removed,
+	         total = (function() local n = 0 for _ in pairs(wanted) do n = n + 1 end return n end)() }
+end
+
+-- ---- configuration export / import -------------------------------------
+local CONFIG_FILES = {
+	blocked_ips = IPSTATE_FILE, blocked = STATE_FILE, names = NAME_FILE,
+	schedule = SCHED_FILE, notify = NOTIFY_FILE, groups = GROUPS_FILE,
+	ports = PORTS_FILE, whitelist = WL_FILE, feeds = FEEDS_FILE,
+	auto = AUTOCFG_FILE,
+}
+
+function methods.exportconfig()
+	local out = { success = true, running = true, version = 1, data = {} }
+	for key, path in pairs(CONFIG_FILES) do
+		local raw = read_all(path)
+		if raw then
+			local p = jsonc.parse(raw)
+			if type(p) == "table" then out.data[key] = p end
+		end
+	end
+	return out
+end
+
+function methods.importconfig(payload)
+	local p = payload
+	if type(p) == "string" then
+		local ok_, parsed = pcall(jsonc.parse, p)
+		if not ok_ or type(parsed) ~= "table" then return err("invalid JSON") end
+		p = parsed
+	end
+	if type(p) ~= "table" or type(p.data) ~= "table" then return err("missing data") end
+	local n = 0
+	for key, path in pairs(CONFIG_FILES) do
+		local v = p.data[key]
+		if type(v) == "table" then
+			local o = jsonc.stringify(v)
+			if o == "[]" then o = "{}" end
+			local f = io.open(path, "w")
+			if f then f:write(o) f:close() n = n + 1 end
+		end
+	end
+	render_rules(load_state())
+	reload_firewall()
+	return ok({ imported = n })
+end
+
 local load_ports
 
-local function render_rules(state)
+function render_rules(state)
 	local lines = {
 		"# Generated by luci.clientblock - do not edit by hand",
 		"# Revert: rm " .. RULE_FILE .. " && fw4 reload",
@@ -336,7 +741,7 @@ local function set_element_live(ip, add)
 	return false
 end
 
-local function reload_firewall()
+function reload_firewall()
 	unload_rules()
 	local ok_ = sys.call("fw4 reload >/dev/null 2>&1") == 0
 	if not ok_ then
@@ -347,7 +752,7 @@ local function reload_firewall()
 	return ok_
 end
 
-local function parse_leases()
+function parse_leases()
 	local map = {}
 	local f = io.open(LEASE_FILE, "r")
 	if not f then return map end
@@ -361,7 +766,7 @@ local function parse_leases()
 	return map
 end
 
-local function parse_neigh()
+function parse_neigh()
 	local map = {}
 	local fh = io.popen(NEIGH_CMD, "r")
 	if not fh then return map end
@@ -382,7 +787,7 @@ local function probe_online()
 	return parse_neigh()
 end
 
-local function parse_static_hosts()
+function parse_static_hosts()
 	local map = {}
 	local out = sys.exec("uci -q show dhcp 2>/dev/null") or ""
 	local cur = {}
@@ -434,6 +839,15 @@ local function collect_devices()
 			blocked_at = state[mac] and state[mac].since or nil,
 			blocked_until = state[mac] and state[mac]["expires"] or nil,
 			block_source = state[mac] and state[mac].source or nil,
+			trusted = wl_has(mac),
+			is_new = (function()
+				local known = _known_cache
+				if not known then
+					known = load_json_map(KNOWN_FILE, function() return {} end)
+					_known_cache = known
+				end
+				return not known[mac]
+			end)(),
 		}
 		seen[mac] = e
 		list[#list + 1] = e
@@ -497,20 +911,19 @@ local function counters()
 	return map
 end
 
-local function ok(tbl)
+function ok(tbl)
 	tbl.success = true
 	tbl.running = true
 	return tbl
 end
 
-local function err(msg)
+function err(msg)
 	local r = { success = false, running = true, error = msg }
 	return r
 end
 
-local methods = {}
-
 function methods.list(probe)
+	_known_cache = nil
 	local devices
 	if probe == "1" or probe == 1 or probe == true then
 		probe_online()
@@ -749,7 +1162,7 @@ function methods.loglist(limit)
 	for _, e in ipairs(entries) do
 		e.host = reverse[e.ip]
 		-- private and reserved ranges have no meaningful region
-		if not e.ip:find(":") and not is_private_ip(e.ip) then
+		if e.source ~= "feed" and not e.ip:find(":") and not is_private_ip(e.ip) then
 			local g = geo_lookup(e.ip)
 			if g and not g:match("^Reserved") then e.geo = g end
 		end
@@ -762,8 +1175,12 @@ function methods.logclear()
 	return ok({})
 end
 
-function methods.iplist()
+function methods.iplist(limit)
 	local st = load_ipstate()
+	local total = 0
+	for _ in pairs(st) do total = total + 1 end
+	limit = tonumber(limit) or 300
+
 	local ctr = ip_counters()
 	local list = {}
 	for ip, meta in pairs(st) do
@@ -775,13 +1192,26 @@ function methods.iplist()
 			since = meta.since,
 			family = ip:find(":") and "ipv6" or "ipv4",
 			source = meta.source or "manual",
-			geo = geo_lookup(ip),
+			feed = meta.feed,
+			evidence = meta.evidence,
 			drop_packets = inb.packets + outb.packets,
 			drop_bytes = inb.bytes + outb.bytes,
 		}
 	end
-	table.sort(list, function(a, b) return a.since > b.since end)
-	return { success = true, running = true, ips = list, count = #list, rule_file = RULE_FILE }, true
+	table.sort(list, function(a, b) return (a.since or 0) > (b.since or 0) end)
+
+	-- only the page that is actually shown, and never for feed addresses
+	-- (a subscription can hold thousands; a geo lookup each would stall)
+	local shown = {}
+	for i = 1, math.min(#list, limit) do
+		local e = list[i]
+		if e.source ~= "feed" and not e.ip:find(":") and not is_private_ip(e.ip) then
+			e.geo = geo_lookup(e.ip)
+		end
+		shown[i] = e
+	end
+	return { success = true, running = true, ips = shown, count = total,
+	         shown = #shown, rule_file = RULE_FILE }, true
 end
 
 -- fast=true skips the persistent rule rewrite and only touches the live set,
@@ -790,7 +1220,7 @@ end
 -- restores the same state.
 local notify_event, notify_send
 
-function methods.ipadd(ip, note, source, fast)
+function methods.ipadd(ip, note, source, fast, evidence)
 	local norm = normalize_ip(ip)
 	if not norm then return err("invalid IP address or CIDR") end
 	local st = load_ipstate()
@@ -799,6 +1229,7 @@ function methods.ipadd(ip, note, source, fast)
 		since = os.time(),
 		note = (note ~= "" and note) or nil,
 		source = (source ~= "" and source) or "manual",
+		evidence = (evidence ~= "" and evidence) or nil,
 	}
 	if not save_ipstate(st) then return err("cannot write state") end
 	render_rules(load_state())
@@ -1037,6 +1468,7 @@ end
 function methods.block(mac, host, ip, source, minutes)
 	mac = normalize_mac(mac)
 	if not mac then return err("invalid MAC") end
+	if wl_has(mac) then return err("device is whitelisted") end
 	local state = load_state()
 	local l = parse_leases()[mac]
 	local s = parse_static_hosts()[mac]
@@ -1126,7 +1558,7 @@ local function count_in(buf, pat)
 	return n
 end
 
-local function read_all(path)
+function read_all(path)
 	local f = io.open(path, "r")
 	if not f then return nil end
 	local d = f:read("*a")
@@ -1266,7 +1698,7 @@ local function save_notify(n)
 	return true
 end
 
-local function shq(v)
+function shq(v)
 	return "'" .. tostring(v or ""):gsub("'", "'\\''") .. "'"
 end
 
@@ -1425,26 +1857,27 @@ local function check_new_devices()
 		if f then f:write(jsonc.stringify(seed)) f:close() end
 		return 0
 	end
+	-- A device that is not in the baseline stays untrusted until the user
+	-- accepts it. Remember that we already announced it so the notice is sent
+	-- once, not every minute.
+	local pending = load_json_map(PENDING_FILE, function() return {} end)
 	local added = 0
 	for mac, ip in pairs(neigh) do
-		if not known[mac] then
-			known[mac] = true
+		if not known[mac] and not pending[mac] then
+			pending[mac] = { first = os.time(), ip = ip, host = names[mac] }
 			added = added + 1
 			notify_event("new_device", "New device",
 				string.format("%s (%s) joined the network", names[mac] or mac, ip))
 		end
 	end
-	if added > 0 then
-		local f = io.open(KNOWN_FILE, "w")
-		if f then f:write(jsonc.stringify(known)) f:close() end
-	end
+	if added > 0 then save_json_map(PENDING_FILE, pending) end
 	return added
 end
 
 -- ============================================================
 -- Device groups, curfew and per-device port restrictions
 -- ============================================================
-local function load_json_map(file, shape)
+function load_json_map(file, shape)
 	local f = io.open(file, "r")
 	if not f then return shape() end
 	local raw = f:read("*a")
@@ -1454,7 +1887,7 @@ local function load_json_map(file, shape)
 	return p
 end
 
-local function save_json_map(file, v)
+function save_json_map(file, v)
 	fs.mkdirr(STATE_DIR)
 	local f = io.open(file, "w")
 	if not f then return false end
@@ -1475,7 +1908,7 @@ local function load_groups()
 	return g
 end
 
-local function split_macs(v)
+function split_macs(v)
 	local out = {}
 	if type(v) == "string" then
 		for m in v:gmatch("[^,%s]+") do
@@ -1981,6 +2414,12 @@ function methods.dashboard()
 	local ntf = load_notify()
 	local cfg = load_autocfg()
 
+	local known = load_json_map(KNOWN_FILE, function() return {} end)
+	local pending = load_json_map(PENDING_FILE, function() return {} end)
+	local n_pending, n_trusted = 0, 0
+	for _ in pairs(known) do n_trusted = n_trusted + 1 end
+	for mac in pairs(pending) do if not known[mac] then n_pending = n_pending + 1 end end
+
 	local ngrp, nch = 0, 0
 	for _ in pairs(grp.groups or {}) do ngrp = ngrp + 1 end
 	for _ in pairs(ntf.channels or {}) do nch = nch + 1 end
@@ -1994,6 +2433,7 @@ function methods.dashboard()
 		groups = ngrp, ports = #(prt.rules or {}), channels = nch,
 		auto_enabled = cfg.enabled, threshold = cfg.threshold, window = cfg.window, ttl = cfg.ttl,
 		health_ok = sc.ok, health_failing = failing,
+		trusted = n_trusted, pending = n_pending,
 		recent = recent,
 	}
 end
@@ -2045,14 +2485,30 @@ if arg[1] == "list" then
 		unblock_all = {},
 		rename      = { mac = "", name = "" },
 		sync        = {},
-		iplist      = {},
-		ipadd       = { ip = "", note = "", source = "", fast = "" },
+		iplist      = { limit = "" },
+		ipadd       = { ip = "", note = "", source = "", fast = "", evidence = "" },
 		ipdel       = { ip = "" },
 		ipflush     = {},
 		scan        = {},
 		geoinfo     = { ip = "" },
 		selfcheck   = {},
 		dashboard   = {},
+		knownadd    = { mac = "" },
+		knownlist   = {},
+		wllist      = {},
+		wladd       = { mac = "" },
+		wldel       = { mac = "" },
+		panicstate  = {},
+		panic       = { on_ = "" },
+		trend       = {},
+		portpresets = {},
+		porttemplate = { macs = "", preset = "" },
+		feedlist    = {},
+		feedadd     = { name = "", url = "" },
+		feeddel     = { id = "" },
+		feedrefresh = { id = "" },
+		exportconfig = {},
+		importconfig = { payload = "" },
 		probe       = {},
 		grouplist    = {},
 		groupadd     = { name = "", macs = "" },
@@ -2105,11 +2561,11 @@ elseif arg[1] == "call" then
 	elseif name == "sync" then
 		res = methods.sync()
 	elseif name == "iplist" then
-		res = methods.iplist()
+		res = methods.iplist(req.limit)
 		reply_list(res, { "ips" })
 		return
 	elseif name == "ipadd" then
-		res = methods.ipadd(req.ip, req.note, req.source, req.fast)
+		res = methods.ipadd(req.ip, req.note, req.source, req.fast, req.evidence)
 	elseif name == "ipdel" then
 		res = methods.ipdel(req.ip)
 	elseif name == "ipflush" then
@@ -2181,6 +2637,48 @@ elseif arg[1] == "call" then
 		res = methods.schedeval()
 	elseif name == "probe" then
 		res = methods.probe()
+	elseif name == "knownadd" then
+		res = methods.knownadd(req.mac)
+	elseif name == "knownlist" then
+		res = methods.knownlist()
+		reply_list(res, { "pending" })
+		return
+	elseif name == "wllist" then
+		res = methods.wllist()
+		reply_list(res, { "macs" })
+		return
+	elseif name == "wladd" then
+		res = methods.wladd(req.mac)
+	elseif name == "wldel" then
+		res = methods.wldel(req.mac)
+	elseif name == "panicstate" then
+		res = methods.panicstate()
+	elseif name == "panic" then
+		res = methods.panic(req.on_)
+	elseif name == "trend" then
+		res = methods.trend()
+		reply_list(res, { "hourly", "daily" })
+		return
+	elseif name == "portpresets" then
+		res = methods.portpresets()
+		reply_list(res, { "presets" })
+		return
+	elseif name == "porttemplate" then
+		res = methods.porttemplate(req.macs, req.preset)
+	elseif name == "feedlist" then
+		res = methods.feedlist()
+		reply_list(res, { "feeds" })
+		return
+	elseif name == "feedadd" then
+		res = methods.feedadd(req.name, req.url)
+	elseif name == "feeddel" then
+		res = methods.feeddel(req.id)
+	elseif name == "feedrefresh" then
+		res = methods.feedrefresh(req.id)
+	elseif name == "exportconfig" then
+		res = methods.exportconfig()
+	elseif name == "importconfig" then
+		res = methods.importconfig(req.payload)
 	elseif name == "dashboard" then
 		res = methods.dashboard()
 		reply_list(res, { "recent", "health_failing" })

@@ -45,6 +45,22 @@ var callIpDel = rpc.declare({
 });
 
 var callDashboard = rpc.declare({ object: 'luci.clientblock', method: 'dashboard' });
+var callTrend = rpc.declare({ object: 'luci.clientblock', method: 'trend' });
+var callPanicState = rpc.declare({ object: 'luci.clientblock', method: 'panicstate' });
+var callPanic = rpc.declare({ object: 'luci.clientblock', method: 'panic', params: ['on_'] });
+var callKnownAdd = rpc.declare({ object: 'luci.clientblock', method: 'knownadd', params: ['mac'] });
+var callKnownList = rpc.declare({ object: 'luci.clientblock', method: 'knownlist' });
+var callWlList = rpc.declare({ object: 'luci.clientblock', method: 'wllist' });
+var callWlAdd = rpc.declare({ object: 'luci.clientblock', method: 'wladd', params: ['mac'] });
+var callWlDel = rpc.declare({ object: 'luci.clientblock', method: 'wldel', params: ['mac'] });
+var callFeedList = rpc.declare({ object: 'luci.clientblock', method: 'feedlist' });
+var callFeedAdd = rpc.declare({ object: 'luci.clientblock', method: 'feedadd', params: ['name', 'url'] });
+var callFeedDel = rpc.declare({ object: 'luci.clientblock', method: 'feeddel', params: ['id'] });
+var callFeedRefresh = rpc.declare({ object: 'luci.clientblock', method: 'feedrefresh', params: ['id'] });
+var callPortPresets = rpc.declare({ object: 'luci.clientblock', method: 'portpresets' });
+var callPortTemplate = rpc.declare({ object: 'luci.clientblock', method: 'porttemplate', params: ['macs', 'preset'] });
+var callExport = rpc.declare({ object: 'luci.clientblock', method: 'exportconfig' });
+var callImport = rpc.declare({ object: 'luci.clientblock', method: 'importconfig', params: ['payload'] });
 
 var callGroupList = rpc.declare({ object: 'luci.clientblock', method: 'grouplist' });
 var callGroupAdd = rpc.declare({ object: 'luci.clientblock', method: 'groupadd', params: ['name', 'macs'] });
@@ -296,6 +312,16 @@ var STYLE = `
 .cb-dash-row .cb-v { font-weight: 600; font-family: var(--font-mono); font-size: .82rem; }
 .cb-fail-list { margin-top: .6rem; display: grid; gap: .3rem; }
 .cb-fail-item { font-size: .8rem; color: var(--danger); }
+
+/* ---- trend chart ---- */
+.cb-trend { display: flex; gap: 2px; align-items: flex-end; height: 4.5rem;
+	padding: .5rem .2rem 0; border-bottom: 1px solid var(--hairline); }
+.cb-trend .cb-bar { flex: 1; min-height: 2px; border-radius: 2px 2px 0 0;
+	background: var(--hover-faint); }
+.cb-trend .cb-bar.has { background: var(--danger); opacity: .85; }
+.cb-trend-legend { display: flex; justify-content: space-between; font-size: .7rem;
+	color: var(--text-subtle); margin-top: .25rem; }
+.cb-trusted { background: var(--info-surface); color: var(--info); }
 
 /* ---- schedule ---- */
 .cb-sched-form { display: flex; flex-wrap: wrap; gap: .55rem; align-items: flex-end;
@@ -590,8 +616,9 @@ return view.extend({
 
 	refreshDash: function () {
 		var self = this;
-		return callDashboard().then(function (res) {
-			self.dash = res || {};
+		return Promise.all([ callDashboard(), callTrend() ]).then(function (r) {
+			self.dash = r[0] || {};
+			self.trend = r[1] || {};
 			self.renderDash();
 		}).catch(function () { self.renderDash(); });
 	},
@@ -625,6 +652,19 @@ return view.extend({
 
 		box.appendChild(E('div', { 'class': 'cb-card' }, [
 			E('div', { 'class': 'cb-card-head' }, [
+				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Login failures, last 24 hours'))
+			]),
+			E('div', { 'class': 'cb-card-body' }, [
+				E('div', { 'class': 'cb-trend', 'id': 'cb-trend' }),
+				E('div', { 'class': 'cb-trend-legend' }, [
+					E('span', {}, '-24h'),
+					E('span', {}, _('now'))
+				])
+			])
+		]));
+
+		box.appendChild(E('div', { 'class': 'cb-card' }, [
+			E('div', { 'class': 'cb-card-head' }, [
 				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Protection'))
 			]),
 			E('div', { 'class': 'cb-card-body' }, E('div', { 'class': 'cb-dash-rows' }, [
@@ -633,11 +673,19 @@ return view.extend({
 					: _('off')),
 				row(_('Blocked addresses from auto-block'), (d.ips_auto || 0)),
 				row(_('Schedule rules'), (d.schedules || 0) + ' (' + (d.schedules_active || 0) + ' ' + _('active now') + ')'),
+				row(_('Trusted devices'), d.trusted || 0),
+				row(_('New devices awaiting review'), d.pending || 0),
 				row(_('Groups'), d.groups || 0),
 				row(_('Port restrictions'), d.ports || 0),
 				row(_('Notification channels'), d.channels || 0),
 				row(_('Logins today'), (d.logins_ok_today || 0) + ' ' + _('ok') + ' · ' + (d.logins_fail_today || 0) + ' ' + _('failed')),
-				row(_('Failures in last 24h'), d.logins_fail_24h || 0)
+				row(_('Failures in last 24h'), d.logins_fail_24h || 0),
+				E('div', { 'style': 'margin-top:.8rem;display:flex;gap:.5rem;flex-wrap:wrap' }, [
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handlePanic(true, ev); } }, _('Block new devices only')),
+					E('button', { 'class': 'cb-btn',
+						'click': function (ev) { self.handlePanic(false, ev); } }, _('Release'))
+				])
 			]))
 		]));
 
@@ -681,6 +729,188 @@ return view.extend({
 				E('div', { 'class': 'cb-card-body' }, rl)
 			]));
 		}
+
+		// the chart markup is rebuilt above, so paint it now
+		self.renderTrend();
+	},
+
+	refreshFeeds: function () {
+		var self = this;
+		return callFeedList().then(function (res) {
+			self.feeds = (res && res.feeds) || [];
+			self.renderFeeds();
+		}).catch(function () { self.renderFeeds(); });
+	},
+
+	handleFeedAdd: function (ev) {
+		var self = this;
+		var n = (document.getElementById('cb-feed-name') || {}).value || '';
+		var u = (document.getElementById('cb-feed-url') || {}).value || '';
+		if (!u) { ui.addNotification(null, E('p', {}, _('List URL is required')), 'warning'); return; }
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callFeedAdd(n, u).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			document.getElementById('cb-feed-url').value = '';
+			return self.refreshFeeds();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleFeedRefresh: function (f, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true; btn.textContent = _('Fetching…');
+		return callFeedRefresh(f.id).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Imported') + ' ' + (res.added || 0) + ', ' + _('removed') + ' ' + (res.removed || 0)), 'info');
+			return Promise.all([ self.refreshFeeds(), self.refreshIps() ]);
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; btn.textContent = _('Fetch'); });
+	},
+
+	handleFeedDel: function (f, ev) {
+		var self = this;
+		ev.currentTarget.disabled = true;
+		return callFeedDel(f.id).then(function () { return Promise.all([ self.refreshFeeds(), self.refreshIps() ]); })
+			.catch(function (e) { ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error'); });
+	},
+
+	renderFeeds: function () {
+		var tbody = document.getElementById('cb-feed-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+		var self = this;
+		var list = this.feeds || [];
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
+				_('No subscriptions yet'))));
+			return;
+		}
+		list.forEach(function (f) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-u' }, f.name || ''),
+				E('td', { 'class': 'cb-t' }, String(f.imported || 0)),
+				E('td', { 'style': 'font-size:.78rem;color:var(--text-muted)' },
+					f.last ? fmtTime(f.last) : _('never')),
+				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [
+					E('button', { 'class': 'cb-btn', 'style': 'margin-right:.3rem',
+						'click': function (ev) { self.handleFeedRefresh(f, ev); } }, _('Fetch')),
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function (ev) { self.handleFeedDel(f, ev); } }, _('Delete'))
+				])
+			]));
+		});
+	},
+
+	refreshTrend: function () {
+		var self = this;
+		return callTrend().then(function (res) {
+			self.trend = res || {};
+			self.renderTrend();
+		}).catch(function () {});
+	},
+
+	renderTrend: function () {
+		var box = document.getElementById('cb-trend');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		var h = (this.trend && this.trend.hourly) || [];
+		if (!h.length) return;
+		var max = 1;
+		h.forEach(function (p) { if (p.fail > max) max = p.fail; });
+		h.forEach(function (p) {
+			var pct = Math.max(2, Math.round((p.fail / max) * 100));
+			box.appendChild(E('div', {
+				'class': 'cb-bar' + (p.fail ? ' has' : ''),
+				'style': 'height:' + pct + '%',
+				'title': (24 - p.ago) + 'h ago · ' + p.fail + ' ' + _('failures') + ' / ' + p.ok + ' ' + _('ok')
+			}));
+		});
+	},
+
+	handlePanic: function (on, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callPanic(on ? '1' : '0').then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {}, on
+				? _('Locked down') + ' · ' + (res.blocked || 0) + ' ' + _('devices')
+				: _('Lockdown released')), 'info');
+			return Promise.all([ self.refreshDash(), self.refresh() ]);
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleAccept: function (dev, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callKnownAdd(dev.mac).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Device accepted')), 'info');
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleTrust: function (dev, ev) {
+		var self = this;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		var call = dev.trusted ? callWlDel : callWlAdd;
+		return call(dev.mac).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			return self.refresh();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleExport: function (ev) {
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callExport().then(function (res) {
+			var ta = document.getElementById('cb-backup-text');
+			if (ta) ta.value = JSON.stringify(res, null, 1);
+			ui.addNotification(null, E('p', {}, _('Backup written to the box below')), 'info');
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleImport: function (ev) {
+		var self = this;
+		var ta = document.getElementById('cb-backup-text');
+		var payload = ta ? ta.value.trim() : '';
+		if (!payload) { ui.addNotification(null, E('p', {}, _('Paste a backup first')), 'warning'); return; }
+		if (!confirm(_('Replace all lists and rules with this backup?'))) return;
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callImport(payload).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Restored') + ' ' + (res.imported || 0) + ' ' + _('sections')), 'info');
+			return Promise.all([ self.refresh(), self.refreshIps(), self.refreshDash() ]);
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handlePortPreset: function (ev) {
+		var self = this;
+		var mac = (document.getElementById('cb-port-mac') || {}).value || '';
+		var preset = (document.getElementById('cb-port-preset') || {}).value || 'iot';
+		if (!mac) { ui.addNotification(null, E('p', {}, _('Pick a device')), 'warning'); return; }
+		var btn = ev.currentTarget; btn.disabled = true;
+		return callPortTemplate(mac, preset).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ui.addNotification(null, E('p', {}, _('Added') + ' ' + (res.added || 0) + ' ' + _('rules')), 'info');
+			return self.refreshPorts();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
 	},
 
 	refreshPorts: function () {
@@ -1419,20 +1649,36 @@ return view.extend({
 			cnt.textContent = (this.ipCount || 0) + ' ' + _('blocked');
 	},
 
+	// One tab may own several panes (Settings groups protection, notifications,
+	// health and backup).
+	tabPanes: {
+		overview: [ 'dash' ],
+		devices: [ 'devices' ],
+		ips: [ 'ips' ],
+		logs: [ 'logs' ],
+		policy: [ 'sched' ],
+		settings: [ 'auto', 'notify', 'health', 'backup' ]
+	},
+
 	switchTab: function (name) {
 		this.tab = name;
-		['dash', 'devices', 'ips', 'logs', 'sched', 'notify', 'health'].forEach(function (t) {
-			var pane = document.getElementById('cb-pane-' + t);
+		var self = this;
+		var all = [];
+		Object.keys(this.tabPanes).forEach(function (k) { all = all.concat(self.tabPanes[k]); });
+		var mine = this.tabPanes[name] || [];
+		all.forEach(function (p) {
+			var el = document.getElementById('cb-pane-' + p);
+			if (el) el.classList.toggle('active', mine.indexOf(p) !== -1);
+		});
+		['overview', 'devices', 'ips', 'logs', 'policy', 'settings'].forEach(function (t) {
 			var btn = document.getElementById('cb-tab-' + t);
-			if (pane) pane.classList.toggle('active', t === name);
 			if (btn) btn.classList.toggle('active', t === name);
 		});
-		if (name === 'dash') return this.refreshDash();
-		if (name === 'ips') return this.refreshIps();
+		if (name === 'overview') return this.refreshDash();
+		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds() ]);
 		if (name === 'logs') return this.refreshLogs();
-		if (name === 'sched') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
-		if (name === 'notify') return this.refreshNotify();
-		if (name === 'health') return this.refreshHealth();
+		if (name === 'policy') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
+		if (name === 'settings') return Promise.all([ this.refreshAuto(), this.refreshNotify(), this.refreshHealth() ]);
 	},
 
 	renderTable: function () {
@@ -1449,11 +1695,24 @@ return view.extend({
 		}
 
 		rows.forEach(function (d) {
+			var newBadge = d.is_new
+				? E('span', { 'class': 'cb-res cb-sched-on', 'style': 'margin-left:.35rem' }, _('new'))
+				: '';
+
 			var stateBadge = d.blocked
 				? E('span', { 'class': 'cb-badge cb-badge-blocked' }, _('Blocked'))
 				: (d.online
 					? E('span', { 'class': 'cb-badge cb-badge-on' }, _('Online'))
 					: E('span', { 'class': 'cb-badge cb-badge-off' }, _('Offline')));
+
+			var trustBtn = d.is_new
+				? E('button', {
+					'class': 'cb-btn cb-btn-primary',
+					'style': 'margin-right:.3rem',
+					'title': _('Accept this device as known'),
+					'click': function (ev) { self.handleAccept(d, ev); }
+				}, _('Allow'))
+				: '';
 
 			var action;
 			if (d.blocked) {
@@ -1486,12 +1745,12 @@ return view.extend({
 				: (d.host || E('span', { 'class': 'cb-mono' }, _('(unnamed)')));
 
 			tbody.appendChild(E('tr', { 'class': d.blocked ? 'cb-blocked' : (d.online ? '' : 'cb-offline') }, [
-				E('td', {}, stateBadge),
+				E('td', {}, [ stateBadge, newBadge ]),
 				E('td', {}, nameCell),
 				E('td', { 'class': 'cb-mono' }, d.ip || '-'),
 				E('td', { 'class': 'cb-mono' }, d.mac),
 				E('td', {}, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
-				E('td', { 'style': 'text-align:right' }, action)
+				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [ trustBtn, action ])
 			]));
 		});
 
@@ -1514,7 +1773,7 @@ return view.extend({
 		this.logResult = 'all';
 		this.query = '';
 		this.ipQuery = '';
-		this.tab = 'dash';
+		this.tab = 'overview';
 		var self = this;
 
 		var search = E('input', {
@@ -1558,11 +1817,56 @@ return view.extend({
 
 		var tabBtn = function (name, label) {
 			return E('button', {
-				'class': 'cb-tab' + (name === 'dash' ? ' active' : ''),
+				'class': 'cb-tab' + (name === 'overview' ? ' active' : ''),
 				'id': 'cb-tab-' + name,
 				'click': function () { self.switchTab(name); }
 			}, label);
 		};
+
+		var autoPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-auto'
+		}, [
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Automatic protection'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-auto-body', 'id': 'cb-auto-body' }),
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-top:.75rem' },
+						_('A source is blocked once it produces the selected failures often enough within the window. Detection is live, not polled.'))
+				])
+			])
+		]);
+
+		var backupPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-backup'
+		}, [
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Backup and restore'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
+						_('Exports every list and rule as JSON: blocked devices and addresses, names, schedules, groups, ports, whitelist, feeds and protection settings.')),
+					E('div', { 'style': 'display:flex;gap:.5rem;flex-wrap:wrap' }, [
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleExport(ev); } }, _('Export')),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleImport(ev); } }, _('Import'))
+					]),
+					E('textarea', {
+						'id': 'cb-backup-text',
+						'style': 'width:100%;height:9rem;margin-top:.7rem;font-family:var(--font-mono);font-size:.75rem;' +
+							'padding:.5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit',
+						'placeholder': _('Paste a backup here, then press Import')
+					})
+				])
+			])
+		]);
 
 		var dashPane = E('div', {
 			'class': 'cb-pane active',
@@ -1617,8 +1921,16 @@ return view.extend({
 						E('label', {}, [ E('span', {}, _('Note')),
 							E('input', { 'type': 'text', 'id': 'cb-port-note', 'placeholder': _('optional'),
 								'style': 'width:10rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('label', {}, [ E('span', {}, _('Preset')),
+							E('select', { 'id': 'cb-port-preset' }, [
+								E('option', { 'value': 'iot' }, 'IoT'),
+								E('option', { 'value': 'smb' }, 'SMB'),
+								E('option', { 'value': 'remote' }, 'Remote')
+							]) ]),
 						E('button', { 'class': 'cb-btn cb-btn-primary',
-							'click': function (ev) { self.handlePortAdd(ev); } }, _('Block port'))
+							'click': function (ev) { self.handlePortAdd(ev); } }, _('Block port')),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handlePortPreset(ev); } }, _('Apply preset'))
 					]),
 					E('table', { 'class': 'cb-table' }, [
 						E('thead', {}, E('tr', {}, [
@@ -1640,12 +1952,28 @@ return view.extend({
 			E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
 					E('span', { 'class': 'cb-dot' }),
-					E('span', {}, _('Automatic protection'))
+					E('span', {}, _('Blocklist subscriptions'))
 				]),
 				E('div', { 'class': 'cb-card-body' }, [
-					E('div', { 'class': 'cb-auto-body', 'id': 'cb-auto-body' }),
-					E('div', { 'class': 'cb-card-hint', 'style': 'margin-top:.75rem' },
-						_('A source is blocked once it produces the selected failures often enough within the window. Detection is live, not polled.'))
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
+						_('Pull public blocklists on demand and merge them here. Entries are tagged with their feed so removing the feed also removes them.')),
+					E('div', { 'class': 'cb-sched-form', 'style': 'padding:0;border:none;background:none;margin-bottom:.6rem' }, [
+						E('label', {}, [ E('span', {}, _('Name')),
+							E('input', { 'type': 'text', 'id': 'cb-feed-name', 'placeholder': _('optional'),
+								'style': 'width:9rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('label', {}, [ E('span', {}, _('List URL')),
+							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',
+								'style': 'width:18rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed'))
+					]),
+					E('table', { 'class': 'cb-table' }, [
+						E('thead', {}, E('tr', {}, [
+							E('th', {}, _('Name')), E('th', {}, _('Imported')),
+							E('th', {}, _('Last fetch')), E('th', { 'style': 'text-align:right' }, _('Action'))
+						])),
+						E('tbody', { 'id': 'cb-feed-tbody' })
+					])
 				])
 			]),
 			E('div', { 'style': 'display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.6rem' }, [
@@ -1849,17 +2177,18 @@ return view.extend({
 			E('style', {}, STYLE),
 			E('h2', {}, _('Client Access Control')),
 			E('div', { 'class': 'cb-tabs' }, [
-				tabBtn('dash', _('Overview')),
+				tabBtn('overview', _('Overview')),
 				tabBtn('devices', _('Devices')),
-				tabBtn('ips', _('External IPs')),
-				tabBtn('logs', _('Login log')),
-				tabBtn('sched', _('Schedules')),
-				tabBtn('notify', _('Notifications')),
-				tabBtn('health', _('Health'))
+				tabBtn('ips', _('Addresses')),
+				tabBtn('logs', _('Log')),
+				tabBtn('policy', _('Policy')),
+				tabBtn('settings', _('Settings'))
 			]),
 			dashPane,
 			devicesPane,
 			ipsPane,
+			autoPane,
+			backupPane,
 			logsPane,
 			schedPane,
 			notifyPane,
@@ -1875,17 +2204,19 @@ return view.extend({
 			self.renderNotify();
 			self.renderPorts();
 			self.renderGroups();
+			self.renderFeeds();
+			self.renderTrend();
 		}, 0);
 
 		poll.add(function () {
 			// a hidden tab has no business polling
 			if (document.hidden) return;
-			if (self.tab === 'dash') return self.refreshDash();
+			if (self.tab === 'overview') return self.refreshDash();
 			if (self.tab === 'ips') return self.refreshIps();
 			if (self.tab === 'logs') return self.refreshLogs();
-			if (self.tab === 'sched') return self.refreshSched();
-			if (self.tab === 'notify') return self.refreshNotify();
-			if (self.tab === 'health') return self.refreshHealth();
+			if (self.tab === 'policy') return self.refreshSched();
+			if (self.tab === 'settings') return self.refreshNotify();
+
 			return self.refresh();
 		}, 10);
 

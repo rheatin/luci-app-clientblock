@@ -81,6 +81,12 @@ msgstr "封禁 IP"
 msgid "Login failures today"
 msgstr "今日登录失败"
 
+msgid "Login failures, last 24 hours"
+msgstr "登录失败（近 24 小时）"
+
+msgid "now"
+msgstr "现在"
+
 msgid "Protection"
 msgstr "防护状态"
 
@@ -102,6 +108,12 @@ msgstr "定时规则"
 msgid "active now"
 msgstr "当前生效"
 
+msgid "Trusted devices"
+msgstr "已信任设备"
+
+msgid "New devices awaiting review"
+msgstr "待确认的新设备"
+
 msgid "Groups"
 msgstr "分组"
 
@@ -122,6 +134,12 @@ msgstr "失败"
 
 msgid "Failures in last 24h"
 msgstr "近 24 小时失败"
+
+msgid "Block new devices only"
+msgstr "仅封禁新设备"
+
+msgid "Release"
+msgstr "解除"
 
 msgid "Health"
 msgstr "健康检查"
@@ -147,17 +165,71 @@ msgstr "会话结束"
 msgid "Recent activity"
 msgstr "最近活动"
 
+msgid "List URL is required"
+msgstr "必须填写列表地址"
+
+msgid "Fetching…"
+msgstr "拉取中…"
+
+msgid "Imported"
+msgstr "已导入"
+
+msgid "removed"
+msgstr "移除"
+
+msgid "Fetch"
+msgstr "拉取"
+
+msgid "No subscriptions yet"
+msgstr "还没有订阅"
+
+msgid "never"
+msgstr "从未"
+
+msgid "failures"
+msgstr "次失败"
+
+msgid "Locked down"
+msgstr "已锁定"
+
+msgid "devices"
+msgstr "台设备"
+
+msgid "Lockdown released"
+msgstr "已解除锁定"
+
+msgid "Device accepted"
+msgstr "已允许该设备"
+
+msgid "Backup written to the box below"
+msgstr "备份已写入下方文本框"
+
+msgid "Paste a backup first"
+msgstr "请先粘贴备份内容"
+
+msgid "Replace all lists and rules with this backup?"
+msgstr "用这个备份替换所有列表与规则？"
+
+msgid "Restored"
+msgstr "已恢复"
+
+msgid "sections"
+msgstr "个部分"
+
 msgid "Pick a device"
 msgstr "请选择设备"
+
+msgid "Added"
+msgstr "已添加"
+
+msgid "rules"
+msgstr "条规则"
 
 msgid "No port restrictions yet"
 msgstr "还没有端口限制"
 
 msgid "Curfew applied to"
 msgstr "已对以下数量设备执行宵禁："
-
-msgid "devices"
-msgstr "台设备"
 
 msgid "No groups yet"
 msgstr "还没有分组"
@@ -315,11 +387,20 @@ msgstr "已封禁"
 msgid "No devices match the filter"
 msgstr "没有匹配的设备"
 
+msgid "new"
+msgstr "新设备"
+
 msgid "Online"
 msgstr "在线"
 
 msgid "Offline"
 msgstr "离线"
+
+msgid "Accept this device as known"
+msgstr "把该设备加入已知列表"
+
+msgid "Allow"
+msgstr "允许"
 
 msgid "Block"
 msgstr "封禁"
@@ -341,6 +422,24 @@ msgstr "按 IP 或备注过滤"
 
 msgid "Note (optional)"
 msgstr "备注（可选）"
+
+msgid "A source is blocked once it produces the selected failures often enough within the window. Detection is live, not polled."
+msgstr "同一来源在时间窗内产生所选类型的失败达到阈值即被封禁。检测是实时流式的，不是轮询。"
+
+msgid "Backup and restore"
+msgstr "备份与恢复"
+
+msgid "Exports every list and rule as JSON: blocked devices and addresses, names, schedules, groups, ports, whitelist, feeds and protection settings."
+msgstr "把所有列表与规则导出为 JSON：封禁设备与地址、名称、定时、分组、端口、白名单、订阅与防护设置。"
+
+msgid "Export"
+msgstr "导出"
+
+msgid "Import"
+msgstr "导入"
+
+msgid "Paste a backup here, then press Import"
+msgstr "把备份粘贴到这里，再点导入"
 
 msgid "Overview only. No device addresses are shown here; open the Devices tab for the full inventory."
 msgstr "仅显示汇总，不包含任何设备地址；完整清单请打开「设备」页签。"
@@ -384,14 +483,32 @@ msgstr "备注"
 msgid "optional"
 msgstr "可选"
 
+msgid "Preset"
+msgstr "预设"
+
 msgid "Block port"
 msgstr "封禁端口"
+
+msgid "Apply preset"
+msgstr "应用预设"
 
 msgid "Blocked addresses cannot be reached from your LAN, and cannot reach it. Both directions are dropped. CIDR ranges are supported."
 msgstr "被封禁的地址既无法从内网访问，也无法访问内网。两个方向都丢弃，支持 CIDR 网段。"
 
-msgid "A source is blocked once it produces the selected failures often enough within the window. Detection is live, not polled."
-msgstr "同一来源在时间窗内产生所选类型的失败达到阈值即被封禁。检测是实时流式的，不是轮询。"
+msgid "Blocklist subscriptions"
+msgstr "黑名单订阅"
+
+msgid "Pull public blocklists on demand and merge them here. Entries are tagged with their feed so removing the feed also removes them."
+msgstr "按需拉取公开黑名单并合并到此处。条目会标记来源订阅，删除订阅时一并移除。"
+
+msgid "List URL"
+msgstr "列表地址"
+
+msgid "Add feed"
+msgstr "添加订阅"
+
+msgid "Last fetch"
+msgstr "上次拉取"
 
 msgid "Quick fill:"
 msgstr "快速填入："
@@ -525,15 +642,15 @@ msgstr "概览"
 msgid "Devices"
 msgstr "设备"
 
-msgid "External IPs"
-msgstr "外部 IP"
+msgid "Addresses"
+msgstr "地址"
 
-msgid "Login log"
-msgstr "登录日志"
+msgid "Log"
+msgstr "日志"
 
-msgid "Schedules"
-msgstr "定时封禁"
+msgid "Policy"
+msgstr "策略"
 
-msgid "Notifications"
-msgstr "通知"
+msgid "Settings"
+msgstr "设置"
 
