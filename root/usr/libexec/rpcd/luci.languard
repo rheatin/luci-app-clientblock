@@ -1304,7 +1304,7 @@ local function collect_clash_stats(now, apps, st)
 			if delta > 0 then
 				local app, conf = classify_flow(apps, (m.network or ""):lower(),
 					tonumber(m.destinationPort) or 0, m.destinationIP, host)
-				if app then
+				if app and conf == "high" then
 					if conf == "high" then
 						learn_app_ip(app.name,
 							fakeip[(m.sourceIP or "") .. "|" .. (m.sourcePort or "")] or m.destinationIP)
@@ -1372,10 +1372,14 @@ local function collect_app_stats(now)
 					dev_ip, remote_ip, remote_port = dst, src, tonumber(sport)
 				end
 
+				-- a port-only guess is not evidence: tcp/6000-9000 is used by
+				-- Home Assistant, access points and torrent clients, and they
+				-- were all being reported as a game. Only a hostname, an
+				-- address we learned, or a verified fingerprint counts.
 				if delta > 0 and dev_ip then
 					local app, conf = classify_flow(apps, proto, remote_port, remote_ip, nil)
-					if app then
-						if conf == "high" then learn_app_ip(app.name, remote_ip) end
+					if app and conf == "high" then
+						learn_app_ip(app.name, remote_ip)
 						record(st, app.name, dev_ip, delta, conf)
 						counted = counted + delta
 					end
