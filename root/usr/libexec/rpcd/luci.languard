@@ -859,9 +859,12 @@ local MAX_FEED_IPS = 20000
 
 local function fetch_feed(fd, ips, now)
 	local tmp = "/tmp/languard-feed.txt"
-	sys.call(string.format("curl -fsSL -m 25 -o %s %s", tmp, shq(fd.url)))
+	-- the exit code matters: a timeout still leaves a partial file behind,
+	-- and treating that as the whole list would delete everything after it
+	local rc = sys.call(string.format("curl -fsSL -m 60 -o %s %s", tmp, shq(fd.url)))
 	local raw = read_all(tmp)
 	fs.unlink(tmp)
+	if rc ~= 0 then return nil, "download failed (curl " .. tostring(rc) .. ")" end
 	if not raw or raw == "" then return nil, "download failed" end
 
 	-- Feeds in the wild are not uniform: netsets put one CIDR per line,
@@ -891,6 +894,14 @@ local function fetch_feed(fd, ips, now)
 		if truncated then break end
 	end
 	if n == 0 and next(dn) == nil then return nil, "nothing usable in feed" end
+
+	local prev = 0
+	for _, meta in pairs(ips) do
+		if tostring(meta.feed or "") == tostring(fd.id) then prev = prev + 1 end
+	end
+	if prev > 100 and n < prev / 2 then
+		return nil, string.format("feed shrank from %d to %d, keeping the old list", prev, n)
+	end
 
 	local added, removed = {}, {}
 	for ip, meta in pairs(ips) do
@@ -942,6 +953,49 @@ end
 -- Push the delta into the running set. No fw4 reload: rebuilding the ruleset
 -- drops every connection on the box, and a scheduled refresh has no business
 -- disturbing the LAN. A reload only happens if the set is missing entirely.
+-- One nft process per 2000 addresses instead of one per address. A batch is
+-- atomic, so a single address that is not in the set makes the whole batch
+-- fail; when that happens each element is retried on its own so the rest
+-- still lands.
+local function nft_chunk(setname, verb, list)
+	if #list == 0 then return end
+	local i = 1
+	while i <= #list do
+		local j = math.min(i + 1999, #list)
+		local part = {}
+		for k = i, j do part[#part + 1] = list[k] end
+		local rc = sys.call(string.format("nft %s element inet fw4 %s { %s } 2>/dev/null",
+			verb, setname, table.concat(part, ", ")))
+		if rc ~= 0 then
+			for _, one in ipairs(part) do
+				sys.call(string.format("nft %s element inet fw4 %s { %s } 2>/dev/null",
+					verb, setname, one))
+			end
+		end
+		i = j + 1
+	end
+end
+
+local function set_exists(name)
+	return sys.call("nft list set inet fw4 " .. name .. " >/dev/null 2>&1") == 0
+end
+
+-- Rewrite the contents of the two sets from state without touching the
+-- ruleset: flushing elements keeps the set object, its chains and every
+-- other firewall rule exactly where they are.
+local function rebuild_sets()
+	local ips = load_ipstate()
+	local v4, v6 = {}, {}
+	for ip in pairs(ips) do
+		if ip:find(":") then v6[#v6 + 1] = ip else v4[#v4 + 1] = ip end
+	end
+	sys.call("nft flush set inet fw4 blocked_ip4 2>/dev/null")
+	sys.call("nft flush set inet fw4 blocked_ip6 2>/dev/null")
+	nft_chunk("blocked_ip4", "add", v4)
+	nft_chunk("blocked_ip6", "add", v6)
+	return #v4 + #v6
+end
+
 local function apply_ip_delta(delta)
 	local function split(list)
 		local v4, v6 = {}, {}
@@ -954,25 +1008,10 @@ local function apply_ip_delta(delta)
 	local add4, add6 = split(delta.added)
 	local del4, del6 = split(delta.removed)
 
-	-- one nft process per 2000 addresses instead of one per address: a feed
-	-- refresh can move tens of thousands of entries
-	local function chunk(setname, verb, list)
-		if #list == 0 then return end
-		local i = 1
-		while i <= #list do
-			local j = math.min(i + 1999, #list)
-			local part = {}
-			for k = i, j do part[#part + 1] = list[k] end
-			sys.call(string.format("nft %s element inet fw4 %s { %s } 2>/dev/null",
-				verb, setname, table.concat(part, ", ")))
-			i = j + 1
-		end
-	end
-
-	chunk("blocked_ip4", "delete", del4)
-	chunk("blocked_ip6", "delete", del6)
-	chunk("blocked_ip4", "add", add4)
-	chunk("blocked_ip6", "add", add6)
+	nft_chunk("blocked_ip4", "delete", del4)
+	nft_chunk("blocked_ip6", "delete", del6)
+	nft_chunk("blocked_ip4", "add", add4)
+	nft_chunk("blocked_ip6", "add", add6)
 end
 
 function methods.feedrefresh(id)
@@ -2207,8 +2246,18 @@ function methods.sync()
 	else
 		render_rules(state)
 	end
-	reload_firewall()
-	return ok({ blocked_count = (function() local n = 0 for _ in pairs(state) do n = n + 1 end return n end)() })
+
+	-- rewriting the set contents is enough to reconcile state and kernel, and
+	-- unlike a firewall reload it does not disturb anything else on the box
+	if set_exists("blocked_ip4") or set_exists("blocked_ip6") then
+		rebuild_sets()
+	else
+		reload_firewall()
+	end
+
+	local n = 0
+	for _ in pairs(state) do n = n + 1 end
+	return ok({ blocked_count = n })
 end
 
 local function table_count(t)
