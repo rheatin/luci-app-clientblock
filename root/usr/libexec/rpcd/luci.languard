@@ -1638,8 +1638,57 @@ local function render_qos_rules()
 	return true
 end
 
+-- Traffic that Clash redirects is terminated and re-originated by it, so a
+-- DSCP we set on the client's packet never reaches the WAN. The only way to
+-- keep the mark is to make those addresses skip the redirect entirely.
+-- The bypass set is derived from the rules: when a rule is removed its app
+-- stops being referenced and its addresses leave the set.
+local BYPASS_SET = "languard_bypass"
+
+local function bypass_addresses()
+	local d = load_qos()
+	local ips = load_appips()
+	local want, seen = {}, {}
+	for _, r in ipairs(d.rules) do
+		if r.app and r.app ~= "" and not seen[r.app] then
+			seen[r.app] = true
+			for _, ip in ipairs(ips[r.app] or {}) do
+				-- a fake address only means something inside Clash; routing
+				-- it directly would black-hole the connection
+				if not want[ip] and not cidr_match(ip, "198.18.0.0/15") then
+					want[ip] = true
+				end
+			end
+		end
+	end
+	local list = {}
+	for ip in pairs(want) do list[#list + 1] = ip end
+	return list
+end
+
+local function bypass_rule_present()
+	local out = sys.exec("nft list chain inet fw4 openclash 2>/dev/null | grep -c '@" .. BYPASS_SET .. "'") or "0"
+	return (tonumber(trim(out)) or 0) > 0
+end
+
+local function apply_bypass()
+	local list = bypass_addresses()
+	sys.call(string.format(
+		"nft list set inet fw4 %s >/dev/null 2>&1 || nft add set inet fw4 %s '{ type ipv4_addr; flags interval; }' 2>/dev/null",
+		BYPASS_SET, BYPASS_SET))
+	sys.call("nft flush set inet fw4 " .. BYPASS_SET .. " 2>/dev/null")
+	if #list > 0 then nft_chunk(BYPASS_SET, "add", list) end
+	if not bypass_rule_present() then
+		-- fw4 reloads and OpenClash restarts rebuild this chain, so the rule
+		-- is re-inserted at the top whenever it is missing
+		sys.call("nft insert rule inet fw4 openclash ip daddr @" .. BYPASS_SET .. " return 2>/dev/null")
+	end
+	return #list
+end
+
 local function apply_qos()
 	render_qos_rules()
+	apply_bypass()
 	-- replace our table in place; fw4 reloads pick the file up afterwards
 	sys.call("nft delete table inet languard_qos 2>/dev/null")
 	local rc = sys.call("nft -f " .. QOS_RULE_FILE .. " 2>/dev/null")
@@ -3674,6 +3723,8 @@ function methods.tick()
 	_qos_dirty = false
 	local apps = collect_app_stats(now)
 	if _qos_dirty then apply_qos() end
+	-- cheap self-heal: the redirect chain is rebuilt by fw4 and OpenClash
+	if not bypass_rule_present() then apply_bypass() end
 	return { success = true, running = true,
 	         expired = e.expired, schedule_changed = sc.changed,
 	         active = sc.active, new_devices = nd, oui_lookups = oui,
