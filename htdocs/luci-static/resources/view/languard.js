@@ -386,6 +386,51 @@ var STYLE = `
 /* new-record flash */
 @keyframes cb-flash { from { background: var(--info-surface); } to { background: transparent; } }
 .cb-log tbody tr.cb-new td { animation: cb-flash 1.6s ease-out 1; }
+
+/* ---- loading skeleton ---- */
+.cb-tablewrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (max-width: 768px) { .cb-log .cb-date { display: none; } }
+.cb-skel { pointer-events: none; }
+.cb-skel-line { display: block; height: .9rem; border-radius: .3rem;
+	background: linear-gradient(90deg, var(--hairline) 25%, rgba(128,128,128,.16) 37%, var(--hairline) 63%);
+	background-size: 400% 100%; animation: cb-shimmer 1.3s ease infinite; }
+@keyframes cb-shimmer { 0% { background-position: 100% 50% } 100% { background-position: 0 50% } }
+
+/* ---- narrow screens ---- */
+@media (max-width: 768px) {
+	.cb-tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+		scrollbar-width: none; margin-bottom: .7rem; }
+	.cb-tabs::-webkit-scrollbar { display: none; }
+	.cb-tab { flex: 0 0 auto; padding: .45rem .7rem; font-size: .85rem; }
+	.cb-stats { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+	.cb-stat { padding: .6rem .7rem; }
+	.cb-stat .cb-n { font-size: 1.3rem; }
+	.cb-dash-row { flex-direction: column; gap: .05rem; padding: .4rem 0; }
+	.cb-dash-row .cb-k { min-width: 0; font-size: .78rem; }
+	.cb-card-body { padding: .65rem .7rem; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+	.cb-table { font-size: .8rem; }
+	.cb-table th, .cb-table td { padding: .4rem .45rem; }
+	.cb-hide-sm { display: none !important; }
+	.cb-vendor { display: none; }
+	.cb-table { width: 100%; }
+	.cb-table th, .cb-table td { white-space: normal; word-break: break-word; }
+	.cb-table td:last-child { white-space: nowrap; }
+	.cb-badge, .cb-src, .cb-tag { white-space: nowrap; }
+	.cb-ipform input.cb-ip { flex: 1 1 100%; }
+	.cb-toolbar { gap: .35rem; }
+	.cb-catchip { font-size: .72rem; padding: .14rem .4rem .14rem .25rem; }
+	.cb-proxyx { padding: 0 .5rem; }
+	.cb-fields { gap: .7rem; }
+	.cb-actions { flex-wrap: wrap; gap: .4rem; }
+	.cb-actions input[type=text] { flex: 1 1 100%; max-width: none !important; }
+	.cb-actions .cb-btn { flex: 1 1 auto; }
+	.cb-check, .cb-proxychip { max-width: 100%; }
+	.cb-check { grid-template-columns: 1.2rem 1fr; gap: .15rem .5rem; }
+	.cb-check .cb-val { grid-column: 2; word-break: break-word; }
+	.cb-check .cb-hint { grid-column: 2; }
+	.cb-wrap h2 { font-size: 1.15rem; margin: .5rem 0; }
+}
+
 `;
 
 function fmtBytes(n) {
@@ -452,16 +497,10 @@ function fmtTime(ts) {
 
 return view.extend({
 	load: function () {
-		return Promise.all([ callList('1'), callIpList(), callAutoGet(), callLogList('500'), callSchedList() ])
-			.then(function (r) {
-			var dev = r[0] || {}, ips = r[1] || {}, auto = r[2] || {}, logs = r[3] || {}, sc = r[4] || {};
-			dev.ips = ips.ips || [];
-			dev.ip_count = ips.count || 0;
-			dev.auto = auto;
-			dev.logs = logs.entries || [];
-			dev.sched = sc.rules || [];
-			return dev;
-		});
+		// Nothing is fetched here. The shell paints immediately and each
+		// section fills itself as its own call returns, so a slow iplist
+		// (100 KB+ once a subscription is loaded) no longer blocks the page.
+		return Promise.resolve({});
 	},
 
 	handleBlock: function (dev, ev) {
@@ -684,6 +723,18 @@ return view.extend({
 		var box = document.getElementById('cb-dash-body');
 		if (!box) return;
 		while (box.firstChild) box.removeChild(box.firstChild);
+
+		if (!this.dash) {
+			// still loading: keep the layout stable instead of flashing dashes
+			box.appendChild(E('div', { 'class': 'cb-stats' },
+				[ 0, 1, 2, 3, 4, 5 ].map(function () {
+					return E('div', { 'class': 'cb-stat cb-skel' }, [
+						E('div', { 'class': 'cb-skel-line', 'style': 'width:45%;height:1.3rem' }),
+						E('div', { 'class': 'cb-skel-line', 'style': 'width:70%;margin-top:.35rem' })
+					]);
+				})));
+			return;
+		}
 
 		var d = this.dash || {};
 		var self = this;
@@ -1426,15 +1477,21 @@ return view.extend({
 			var cls = self.logResultClass(e.result) + (newKeys[key] ? ' cb-new' : '');
 
 			tbody.appendChild(E('tr', { 'class': cls }, [
-				E('td', { 'class': 'cb-t' }, fmtTime(e.ts)),
+				E('td', { 'class': 'cb-t' }, (function () {
+					// the day separator already carries the date; on a phone the
+					// column only needs the clock
+					var ft = fmtTime(e.ts), sp = ft.indexOf(' ');
+					if (sp < 0) return ft;
+					return [ E('span', { 'class': 'cb-date' }, ft.slice(0, sp)), ' ', ft.slice(sp + 1) ];
+				})()),
 				E('td', {}, resBadge),
 				E('td', {}, srcBadge),
-				E('td', {}, authBadge),
+				E('td', { 'class': 'cb-hide-sm' }, authBadge),
 				E('td', { 'class': 'cb-ip' }, [
 					e.ip || '-',
 					e.host ? E('span', { 'class': 'cb-drop' }, ' ' + e.host) : ''
 				]),
-				E('td', { 'class': 'cb-u' }, e.user || '-'),
+				E('td', { 'class': 'cb-u cb-hide-sm' }, e.user || '-'),
 				E('td', { 'class': 'cb-detail' }, reason || geoCell
 					? [ geoCell, geoCell && reason ? ' ' : '', reason ]
 					: '')
@@ -1794,9 +1851,9 @@ return view.extend({
 					var text = (r.category === 'feed' && r.feed_name) ? r.feed_name : c.label;
 					return [ ' ', E('span', { 'class': 'cb-src ' + c.cls, 'title': c.label }, text) ];
 				})())),
-				E('td', { 'style': 'font-size:.8rem;opacity:.85' }, fmtGeo(r.geo) || E('span', { 'class': 'cb-drop' }, '-')),
+				E('td', { 'class': 'cb-hide-sm', 'style': 'font-size:.8rem;opacity:.85' }, fmtGeo(r.geo) || E('span', { 'class': 'cb-drop' }, '-')),
 				E('td', {}, r.note || ''),
-				E('td', { 'class': 'cb-drop' }, (r.drop_packets || 0) + ' pkt / ' + fmtBytes(r.drop_bytes)),
+				E('td', { 'class': 'cb-drop cb-hide-sm' }, (r.drop_packets || 0) + ' pkt / ' + fmtBytes(r.drop_bytes)),
 				E('td', { 'class': 'cb-drop' }, fmtTime(r.since)),
 				E('td', { 'style': 'text-align:right' },
 					E('button', {
@@ -1925,11 +1982,11 @@ return view.extend({
 						: ''
 				]),
 				E('td', { 'class': 'cb-mono' }, d.ip || '-'),
-				E('td', { 'class': 'cb-mono' }, d.mac),
-				E('td', { 'class': 'cb-drop' }, d.first_seen
+				E('td', { 'class': 'cb-mono cb-hide-sm' }, d.mac),
+				E('td', { 'class': 'cb-drop cb-hide-sm' }, d.first_seen
 					? ((d.first_assumed ? '≈ ' : '') + fmtTime(d.first_seen))
 					: '-'),
-				E('td', {}, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
+				E('td', { 'class': 'cb-hide-sm' }, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
 				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [ trustBtn, action ])
 			]));
 		});
@@ -2074,9 +2131,9 @@ return view.extend({
 					E('th', {}, _('Status')),
 					E('th', {}, _('Name')),
 					E('th', {}, _('IP')),
-					E('th', {}, _('MAC')),
-					E('th', {}, _('First seen')),
-					E('th', {}, _('Dropped')),
+					E('th', { 'class': 'cb-hide-sm' }, _('MAC')),
+					E('th', { 'class': 'cb-hide-sm' }, _('First seen')),
+					E('th', { 'class': 'cb-hide-sm' }, _('Dropped')),
 					E('th', { 'style': 'text-align:right' }, _('Action'))
 				])),
 				E('tbody', { 'id': 'cb-tbody' })
@@ -2186,7 +2243,7 @@ return view.extend({
 			E('table', { 'class': 'cb-table' }, [
 				E('thead', {}, E('tr', {}, [
 					E('th', {}, _('Address')),
-					E('th', {}, _('Region')),
+					E('th', { 'class': 'cb-hide-sm' }, _('Region')),
 					E('th', {}, _('Note')),
 					E('th', {}, _('Dropped')),
 					E('th', {}, _('Since')),
@@ -2226,17 +2283,19 @@ return view.extend({
 				E('button', { 'class': 'cb-btn cb-btn-danger',
 					'click': function (ev) { self.handleLogClear(ev); } }, _('Clear log'))
 			]),
-			E('table', { 'class': 'cb-table cb-log' }, [
-				E('thead', {}, E('tr', {}, [
-					E('th', {}, _('Time')),
-					E('th', {}, _('Result')),
-					E('th', {}, _('Source')),
-					E('th', {}, _('Auth')),
-					E('th', {}, _('IP')),
-					E('th', {}, _('User')),
-					E('th', {}, _('Detail'))
-				])),
-				E('tbody', { 'id': 'cb-log-tbody' })
+			E('div', { 'class': 'cb-tablewrap' }, [
+				E('table', { 'class': 'cb-table cb-log' }, [
+					E('thead', {}, E('tr', {}, [
+						E('th', {}, _('Time')),
+						E('th', {}, _('Result')),
+						E('th', {}, _('Source')),
+						E('th', { 'class': 'cb-hide-sm' }, _('Auth')),
+						E('th', {}, _('IP')),
+						E('th', { 'class': 'cb-hide-sm' }, _('User')),
+						E('th', {}, _('Detail'))
+					])),
+					E('tbody', { 'id': 'cb-log-tbody' })
+				])
 			])
 		]);
 
@@ -2378,6 +2437,7 @@ return view.extend({
 		]);
 
 		window.setTimeout(function () {
+			// skeletons first so the page is never blank
 			self.renderDash();
 			self.renderTable();
 			self.renderAuto();
@@ -2388,6 +2448,13 @@ return view.extend({
 			self.renderGroups();
 			self.renderFeeds();
 			self.renderTrend();
+
+			// the visible tab streams in; the device list is prefetched right
+			// after so switching to it is instant, while the two heavy panes
+			// (addresses, log) stay lazy until they are opened
+			self.refreshDash().then(function () {
+				window.setTimeout(function () { self.refresh(); }, 30);
+			});
 		}, 0);
 
 		poll.add(function () {
