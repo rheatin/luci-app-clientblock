@@ -22,6 +22,7 @@ local PENDING_FILE = STATE_DIR .. "/pending.json"
 local OUI_CACHE = STATE_DIR .. "/oui_cache.json"
 local KNOWN_FILE = STATE_DIR .. "/known_devices.json"
 local PROXY_FILE = STATE_DIR .. "/trusted_proxies.json"
+local ARP_FILE = STATE_DIR .. "/arp_guard.json"
 local NOTIFY_TMP = "/tmp/languard-notify.json"
 local LOG_FILE = STATE_DIR .. "/login.log"
 local LOG_MAX = 500
@@ -39,6 +40,7 @@ local parse_leases, parse_neigh, parse_static_hosts
 local is_trusted_proxy, extract_forwarded
 local render_rules, reload_firewall, load_json_map, save_json_map
 local split_macs, load_ports
+local notify_event
 
 
 local function trim(s)
@@ -629,6 +631,11 @@ local function load_feeds()
 	local f = load_json_map(FEEDS_FILE, function() return { seq = 0, feeds = {} } end)
 	f.seq = tonumber(f.seq) or 0
 	if type(f.feeds) ~= "table" then f.feeds = {} end
+	-- subscriptions created before scheduling existed default to daily, the
+	-- whole point of keeping a list is that it stays current
+	for _, fd in ipairs(f.feeds) do
+		if fd.interval == nil then fd.interval = 86400 end
+	end
 	return f
 end
 
@@ -644,17 +651,22 @@ function methods.feedlist()
 	for _, fd in ipairs(f.feeds) do
 		out[#out + 1] = { id = fd.id, name = fd.name, url = fd.url,
 		                  enabled = fd.enabled ~= false, imported = counts[tostring(fd.id)] or 0,
-		                  last = fd.last, last_count = fd.last_count }
+		                  last = fd.last, last_count = fd.last_count,
+		                  interval = tonumber(fd.interval) or 0,
+		                  last_error = fd.last_error,
+		                  total = fd.last_total, truncated = fd.last_truncated }
 	end
 	return { success = true, running = true, feeds = out }
 end
 
-function methods.feedadd(name, url)
+function methods.feedadd(name, url, interval)
 	if tostring(url or "") == "" then return err("url required") end
 	local f = load_feeds()
 	f.seq = (tonumber(f.seq) or 0) + 1
+	local iv = tonumber(interval)
+	if iv == nil then iv = 86400 end
 	f.feeds[#f.feeds + 1] = { id = f.seq, name = (name ~= "" and name) or tostring(url),
-	                          url = url, enabled = true }
+	                          url = url, enabled = true, interval = iv }
 	save_json_map(FEEDS_FILE, f)
 	return ok({ id = f.seq })
 end
@@ -698,7 +710,102 @@ local function feed_skip(ip)
 	return false
 end
 
--- Fetch one feed and merge its addresses. Returns the number added/removed.
+-- Fetch one feed into `ips` without touching the firewall. Returns the set of
+-- added and removed addresses, or nil plus a reason.
+local MAX_FEED_IPS = 20000
+
+local function fetch_feed(fd, ips, now)
+	local tmp = "/tmp/languard-feed.txt"
+	sys.call(string.format("curl -fsSL -m 25 -o %s %s", tmp, shq(fd.url)))
+	local raw = read_all(tmp)
+	fs.unlink(tmp)
+	if not raw or raw == "" then return nil, "download failed" end
+
+	-- Feeds in the wild are not uniform: netsets put one CIDR per line,
+	-- Spamhaus appends "; SBL123", some providers emit CSV, others ship a
+	-- hosts file. Take every token that parses as an address and ignore the
+	-- rest, so one list does not need a bespoke parser.
+	-- Most public lists are ordered worst-first, so a cap keeps the top of the
+	-- list. It also bounds the state file: every ubus call parses it, and
+	-- 150k entries made a single tick cost five seconds.
+	local wanted, n, truncated = {}, 0, false
+	for line in raw:gmatch("[^\n]+") do
+		line = line:gsub("#.*$", ""):gsub("//.*$", "")
+		for tok in line:gmatch("[^%s,;\t]+") do
+			local norm = normalize_ip(tok)
+			if norm and not feed_skip(norm) and not is_trusted_proxy(norm)
+			   and not wanted[norm] then
+				if n >= MAX_FEED_IPS then
+					truncated = true
+					break
+				end
+				wanted[norm] = true
+				n = n + 1
+			end
+		end
+		if truncated then break end
+	end
+	if n == 0 then return nil, "no addresses in feed" end
+
+	local added, removed = {}, {}
+	for ip, meta in pairs(ips) do
+		if tostring(meta.feed or "") == tostring(fd.id) and not wanted[ip] then
+			ips[ip] = nil
+			removed[#removed + 1] = ip
+		end
+	end
+	for ip in pairs(wanted) do
+		if ips[ip] == nil then
+			ips[ip] = { since = now, note = "feed: " .. fd.name,
+			            source = "feed", feed = tostring(fd.id) }
+			added[#added + 1] = ip
+		end
+	end
+
+	fd.last = now
+	fd.last_count = #added
+	fd.last_total = n
+	fd.last_truncated = truncated
+	fd.last_error = nil
+	return { added = added, removed = removed, total = n, truncated = truncated }
+end
+
+-- Push the delta into the running set. No fw4 reload: rebuilding the ruleset
+-- drops every connection on the box, and a scheduled refresh has no business
+-- disturbing the LAN. A reload only happens if the set is missing entirely.
+local function apply_ip_delta(delta)
+	local function split(list)
+		local v4, v6 = {}, {}
+		for _, ip in ipairs(list) do
+			if ip:find(":") then v6[#v6 + 1] = ip else v4[#v4 + 1] = ip end
+		end
+		return v4, v6
+	end
+
+	local add4, add6 = split(delta.added)
+	local del4, del6 = split(delta.removed)
+
+	-- one nft process per 2000 addresses instead of one per address: a feed
+	-- refresh can move tens of thousands of entries
+	local function chunk(setname, verb, list)
+		if #list == 0 then return end
+		local i = 1
+		while i <= #list do
+			local j = math.min(i + 1999, #list)
+			local part = {}
+			for k = i, j do part[#part + 1] = list[k] end
+			sys.call(string.format("nft %s element inet fw4 %s { %s } 2>/dev/null",
+				verb, setname, table.concat(part, ", ")))
+			i = j + 1
+		end
+	end
+
+	chunk("blocked_ip4", "delete", del4)
+	chunk("blocked_ip6", "delete", del6)
+	chunk("blocked_ip4", "add", add4)
+	chunk("blocked_ip6", "add", add6)
+end
+
 function methods.feedrefresh(id)
 	local f = load_feeds()
 	local fd
@@ -707,51 +814,138 @@ function methods.feedrefresh(id)
 	end
 	if not fd then return err("no such feed") end
 
-	local tmp = "/tmp/languard-feed.txt"
-	sys.call(string.format("curl -fsSL -m 25 -o %s %s", tmp, shq(fd.url)))
-	local raw = read_all(tmp)
-	fs.unlink(tmp)
-	if not raw or raw == "" then return err("download failed") end
-
-	-- Feeds in the wild are not uniform: netsets put one CIDR per line,
-	-- Spamhaus appends "; SBL123", some providers emit CSV, others ship a
-	-- hosts file. Take every token that parses as an address and ignore the
-	-- rest, so one list does not need a bespoke parser.
-	local wanted = {}
-	for line in raw:gmatch("[^\n]+") do
-		line = line:gsub("#.*$", ""):gsub("//.*$", "")
-		for tok in line:gmatch("[^%s,;\t]+") do
-			local norm = normalize_ip(tok)
-			if norm and not feed_skip(norm) and not is_trusted_proxy(norm) then
-				wanted[norm] = true
-			end
-		end
-	end
-
 	local ips = load_ipstate()
-	local added, removed = 0, 0
-	for ip, meta in pairs(ips) do
-		if tostring(meta.feed or "") == tostring(id) and not wanted[ip] then
-			ips[ip] = nil
-			removed = removed + 1
-		end
-	end
-	for ip in pairs(wanted) do
-		if ips[ip] == nil then
-			ips[ip] = { since = os.time(), note = "feed: " .. fd.name,
-			            source = "feed", feed = tostring(id) }
-			added = added + 1
-		end
+	local delta, why = fetch_feed(fd, ips, os.time())
+	if not delta then
+		fd.last_error = why
+		save_json_map(FEEDS_FILE, f)
+		return err(why)
 	end
 
-	fd.last = os.time()
-	fd.last_count = added
 	save_json_map(FEEDS_FILE, f)
 	save_ipstate(ips)
 	render_rules(load_state())
-	reload_firewall()
-	return { success = true, running = true, added = added, removed = removed,
-	         total = (function() local n = 0 for _ in pairs(wanted) do n = n + 1 end return n end)() }
+	apply_ip_delta(delta)
+	return { success = true, running = true, added = #delta.added,
+	         removed = #delta.removed, total = delta.total,
+	         truncated = delta.truncated, cap = MAX_FEED_IPS }
+end
+
+function methods.feedset(id, interval)
+	local f = load_feeds()
+	local fd
+	for _, x in ipairs(f.feeds) do
+		if tostring(x.id) == tostring(id) then fd = x end
+	end
+	if not fd then return err("no such feed") end
+	local iv = tonumber(interval)
+	if not iv or iv < 0 then return err("invalid interval") end
+	fd.interval = iv
+	save_json_map(FEEDS_FILE, f)
+	return ok({ id = fd.id, interval = iv })
+end
+
+
+-- ---- ARP guard ---------------------------------------------------------
+-- A device that suddenly answers for another device's address is either a
+-- misconfiguration or an ARP spoof. The neighbour table is already read on
+-- every tick for the device list, so keeping the previous mapping costs one
+-- small file.
+
+local function default_gateway()
+	local fh = io.popen("ip route show default 2>/dev/null", "r")
+	if not fh then return nil end
+	local gw
+	for line in fh:lines() do
+		gw = gw or line:match("via%s+(%d+%.%d+%.%d+%.%d+)")
+	end
+	fh:close()
+	return gw
+end
+
+local function check_arp_changes(now)
+	local st = load_json_map(ARP_FILE, function() return { map = {}, alerts = {}, events = {} } end)
+	st.map = type(st.map) == "table" and st.map or {}
+	st.alerts = type(st.alerts) == "table" and st.alerts or {}
+	st.events = type(st.events) == "table" and st.events or {}
+
+	local cur = {}
+	for mac, ip in pairs(parse_neigh()) do cur[ip] = mac end
+
+	local gw = default_gateway()
+	local events = {}
+
+	for ip, mac in pairs(cur) do
+		local old = st.map[ip]
+		if old and old ~= mac then
+			-- phones rotate their private Wi-Fi address by design; alerting on
+			-- those would train the user to ignore the warning
+			local noisy = is_local_mac(old) or is_local_mac(mac)
+			local is_gw = (ip == gw)
+			if is_gw or not noisy then
+				local key = ip .. "|" .. mac
+				local last = tonumber(st.alerts[key]) or 0
+				if now - last > 3600 then
+					st.alerts[key] = now
+					local ev = { ts = now, ip = ip, was = old, now = mac,
+					             severity = is_gw and "gateway" or "conflict" }
+					events[#events + 1] = ev
+					st.events[#st.events + 1] = ev
+				end
+			end
+		end
+		st.map[ip] = mac
+	end
+
+	-- keep the history short and the rate-limit table bounded
+	while #st.events > 50 do table.remove(st.events, 1) end
+	for k, ts in pairs(st.alerts) do
+		if now - (tonumber(ts) or 0) > 7 * 86400 then st.alerts[k] = nil end
+	end
+
+	if #events > 0 then
+		save_json_map(ARP_FILE, st)
+		for _, ev in ipairs(events) do
+			notify_event("arp_change",
+				ev.severity == "gateway" and "Gateway MAC changed" or "MAC conflict",
+				string.format("%s: %s -> %s", ev.ip, ev.was, ev.now))
+		end
+	end
+	return events
+end
+
+-- Called from tick: refresh at most one due subscription per run so a slow
+-- source never stalls the minute tick.
+local function refresh_due_feeds(now)
+	local f = load_feeds()
+	local due
+	for _, fd in ipairs(f.feeds) do
+		local iv = tonumber(fd.interval) or 0
+		if fd.enabled ~= false and iv > 0 and
+		   (now - (tonumber(fd.last) or 0)) >= iv then
+			due = fd
+			break
+		end
+	end
+	if not due then return nil end
+
+	local ips = load_ipstate()
+	local delta, why = fetch_feed(due, ips, now)
+	if not delta then
+		due.last_error = why
+		-- do not hammer a broken source on every tick
+		due.last = now
+		save_json_map(FEEDS_FILE, f)
+		notify_event("feed_fail", "Feed failed: " .. due.name, tostring(why))
+		return { id = due.id, name = due.name, error = why }
+	end
+
+	save_json_map(FEEDS_FILE, f)
+	save_ipstate(ips)
+	render_rules(load_state())
+	apply_ip_delta(delta)
+	return { id = due.id, name = due.name, added = #delta.added,
+	         removed = #delta.removed, truncated = delta.truncated }
 end
 
 -- ---- configuration export / import -------------------------------------
@@ -1447,7 +1641,7 @@ end
 -- which is what the automatic login-failure path wants (no 6 s firewall reload
 -- in the middle of an attack). The rule file is still refreshed so a reboot
 -- restores the same state.
-local notify_event, notify_send
+local notify_send
 
 function methods.ipadd(ip, note, source, fast, evidence)
 	local norm = normalize_ip(ip)
@@ -2439,13 +2633,17 @@ end
 
 -- Called once a minute by the watcher: schedules first, then expiry.
 function methods.tick()
+	local now = os.time()
 	local e = methods.expire()
 	local sc = methods.schedeval()
 	local nd = check_new_devices()
 	local oui = oui_enrich(2)
+	local ff = refresh_due_feeds(now)
+	local arp = check_arp_changes(now)
 	return { success = true, running = true,
 	         expired = e.expired, schedule_changed = sc.changed,
-	         active = sc.active, new_devices = nd, oui_lookups = oui }
+	         active = sc.active, new_devices = nd, oui_lookups = oui,
+	         feed = ff, arp_events = arp }
 end
 
 function methods.schedlist()
@@ -2770,6 +2968,15 @@ function methods.dashboard()
 	for _ in pairs(known) do n_trusted = n_trusted + 1 end
 	for mac in pairs(pending) do if not known[mac] then n_pending = n_pending + 1 end end
 
+	local arp = load_json_map(ARP_FILE, function() return { events = {} } end)
+	local arp_recent, arp_24h = {}, 0
+	for _, ev in ipairs(arp.events or {}) do
+		if now - (tonumber(ev.ts) or 0) <= 86400 then
+			arp_24h = arp_24h + 1
+			arp_recent[#arp_recent + 1] = ev
+		end
+	end
+
 	local ngrp, nch = 0, 0
 	for _ in pairs(grp.groups or {}) do ngrp = ngrp + 1 end
 	for _ in pairs(ntf.channels or {}) do nch = nch + 1 end
@@ -2784,6 +2991,7 @@ function methods.dashboard()
 		auto_enabled = cfg.enabled, threshold = cfg.threshold, window = cfg.window, ttl = cfg.ttl,
 		health_ok = sc.ok, health_failing = failing,
 		trusted = n_trusted, pending = n_pending,
+		arp_24h = arp_24h, arp_recent = arp_recent,
 		recent = recent,
 	}
 end
@@ -2860,6 +3068,7 @@ if arg[1] == "list" then
 		feedadd     = { name = "", url = "" },
 		feeddel     = { id = "" },
 		feedrefresh = { id = "" },
+		feedset     = { id = "", interval = "" },
 		exportconfig = {},
 		importconfig = { payload = "" },
 		probe       = {},
@@ -3036,6 +3245,8 @@ elseif arg[1] == "call" then
 		res = methods.feeddel(req.id)
 	elseif name == "feedrefresh" then
 		res = methods.feedrefresh(req.id)
+	elseif name == "feedset" then
+		res = methods.feedset(req.id, req.interval)
 	elseif name == "exportconfig" then
 		res = methods.exportconfig()
 	elseif name == "importconfig" then

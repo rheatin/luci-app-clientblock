@@ -755,3 +755,39 @@ msgstr "设置"
 
 msgid "LAN Guard"
 msgstr "局域网守卫"
+
+msgid "manual"
+msgstr "手动"
+
+msgid "hourly"
+msgstr "每小时"
+
+msgid "every 6 hours"
+msgstr "每 6 小时"
+
+msgid "daily"
+msgstr "每天"
+
+msgid "weekly"
+msgstr "每周"
+
+msgid "last fetch failed"
+msgstr "上次拉取失败"
+
+msgid "only the first entries of a large list are imported"
+msgstr "大列表只导入最前面的若干条"
+
+msgid "truncated to"
+msgstr "已截断至"
+
+msgid "MAC changes, last 24 hours"
+msgstr "MAC 变更（近 24 小时）"
+
+msgid "MAC conflicts"
+msgstr "MAC 冲突"
+
+msgid "gateway"
+msgstr "网关"
+
+msgid "conflict"
+msgstr "地址冲突"

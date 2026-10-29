@@ -59,7 +59,8 @@ var callWlList = rpc.declare({ object: 'luci.languard', method: 'wllist' });
 var callWlAdd = rpc.declare({ object: 'luci.languard', method: 'wladd', params: ['mac'] });
 var callWlDel = rpc.declare({ object: 'luci.languard', method: 'wldel', params: ['mac'] });
 var callFeedList = rpc.declare({ object: 'luci.languard', method: 'feedlist' });
-var callFeedAdd = rpc.declare({ object: 'luci.languard', method: 'feedadd', params: ['name', 'url'] });
+var callFeedAdd = rpc.declare({ object: 'luci.languard', method: 'feedadd', params: ['name', 'url', 'interval'] });
+var callFeedSet = rpc.declare({ object: 'luci.languard', method: 'feedset', params: ['id', 'interval'] });
 var callFeedDel = rpc.declare({ object: 'luci.languard', method: 'feeddel', params: ['id'] });
 var callFeedRefresh = rpc.declare({ object: 'luci.languard', method: 'feedrefresh', params: ['id'] });
 var callPortPresets = rpc.declare({ object: 'luci.languard', method: 'portpresets' });
@@ -389,6 +390,8 @@ var STYLE = `
 
 /* ---- loading skeleton ---- */
 .cb-tablewrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.cb-sel { padding: .25rem .4rem; border-radius: .3rem; border: 1px solid var(--hairline);
+	background: transparent; color: inherit; font-size: .8rem; }
 @media (max-width: 768px) { .cb-log .cb-date { display: none; } }
 .cb-skel { pointer-events: none; }
 .cb-skel-line { display: block; height: .9rem; border-radius: .3rem;
@@ -758,6 +761,24 @@ return view.extend({
 			card(d.logins_fail_today, _('Login failures today'), d.logins_fail_today ? 'warn' : '')
 		]));
 
+		if (d.arp_recent && d.arp_recent.length) {
+			box.appendChild(E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot', 'style': 'background:var(--danger)' }),
+					E('span', {}, _('MAC conflicts'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, E('div', { 'class': 'cb-dash-rows' },
+					d.arp_recent.slice(-6).reverse().map(function (ev) {
+						return E('div', { 'class': 'cb-dash-row' }, [
+							E('span', { 'class': 'cb-k' }, (ev.severity === 'gateway'
+								? _('gateway') : _('conflict')) + ' · ' + fmtTime(ev.ts)),
+							E('span', { 'class': 'cb-v', 'style': 'color:var(--danger)' },
+								ev.ip + '  ' + ev.was + ' → ' + ev.now)
+						]);
+					})))
+			]));
+		}
+
 		box.appendChild(E('div', { 'class': 'cb-card' }, [
 			E('div', { 'class': 'cb-card-head' }, [
 				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Login failures, last 24 hours'))
@@ -783,6 +804,8 @@ return view.extend({
 				row(_('Schedule rules'), (d.schedules || 0) + ' (' + (d.schedules_active || 0) + ' ' + _('active now') + ')'),
 				row(_('Trusted devices'), d.trusted || 0),
 				row(_('New devices awaiting review'), d.pending || 0),
+				row(_('MAC changes, last 24 hours'),
+					(d.arp_24h || 0) + (d.arp_24h ? '' : '')),
 				row(_('Groups'), d.groups || 0),
 				row(_('Port restrictions'), d.ports || 0),
 				row(_('Notification channels'), d.channels || 0),
@@ -892,14 +915,48 @@ return view.extend({
 		var self = this;
 		var list = this.feeds || [];
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
 				_('No subscriptions yet'))));
 			return;
 		}
+		var INTERVALS = [
+			{ v: 0,      l: _('manual') },
+			{ v: 3600,   l: _('hourly') },
+			{ v: 21600,  l: _('every 6 hours') },
+			{ v: 86400,  l: _('daily') },
+			{ v: 604800, l: _('weekly') }
+		];
+
 		list.forEach(function (f) {
+			var cur = Number(f.interval) || 0;
+			var sel = E('select', {
+				'class': 'cb-sel',
+				'change': function (ev) {
+					var v = ev.target.value;
+					callFeedSet(f.id, v).then(function () { self.renderFeeds(); })
+						.catch(function (e) {
+							ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+						});
+				}
+			}, INTERVALS.map(function (o) {
+				return E('option', { 'value': o.v, 'selected': cur === o.v ? 'selected' : null }, o.l);
+			}));
+
 			tbody.appendChild(E('tr', {}, [
-				E('td', { 'class': 'cb-u' }, f.name || ''),
+				E('td', { 'class': 'cb-u' }, [
+					f.name || '',
+					f.last_error
+						? E('div', { 'class': 'cb-drop', 'title': f.last_error, 'style': 'color:var(--danger)' },
+							_('last fetch failed'))
+						: '',
+					f.truncated
+						? E('div', { 'class': 'cb-drop', 'style': 'color:var(--warning)',
+							'title': _('only the first entries of a large list are imported') },
+							_('truncated to') + ' ' + (f.imported || 0) + ' / ' + (f.total || 0))
+						: ''
+				]),
 				E('td', { 'class': 'cb-t' }, String(f.imported || 0)),
+				E('td', {}, sel),
 				E('td', { 'style': 'font-size:.78rem;color:var(--text-muted)' },
 					f.last ? fmtTime(f.last) : _('never')),
 				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [
@@ -2205,12 +2262,15 @@ return view.extend({
 						E('button', { 'class': 'cb-btn',
 							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed'))
 					]),
-					E('table', { 'class': 'cb-table' }, [
-						E('thead', {}, E('tr', {}, [
-							E('th', {}, _('Name')), E('th', {}, _('Imported')),
-							E('th', {}, _('Last fetch')), E('th', { 'style': 'text-align:right' }, _('Action'))
-						])),
-						E('tbody', { 'id': 'cb-feed-tbody' })
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Name')), E('th', {}, _('Imported')),
+								E('th', {}, _('Refresh')), E('th', {}, _('Last fetch')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-feed-tbody' })
+						])
 					])
 				])
 			]),
