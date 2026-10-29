@@ -410,7 +410,10 @@ var STYLE = `
 	font-size: .78rem; padding: .5rem; border-radius: .3rem; resize: vertical;
 	border: 1px solid var(--hairline); background: var(--surface-sunken); color: inherit; }
 .cb-sel { padding: .25rem .4rem; border-radius: .3rem; border: 1px solid var(--hairline);
-	background: transparent; color: inherit; font-size: .8rem; }
+	background: var(--surface-sunken); color: inherit; font-size: .8rem;
+	/* without this the native popup is drawn in the OS light palette */
+	color-scheme: dark; }
+.cb-sel option { background: var(--surface-sunken); color: inherit; }
 @media (max-width: 768px) { .cb-log .cb-date { display: none; } }
 .cb-skel { pointer-events: none; }
 .cb-skel-line { display: block; height: .9rem; border-radius: .3rem;

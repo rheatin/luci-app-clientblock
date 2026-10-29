@@ -1587,7 +1587,7 @@ local function render_qos_rules()
 
 	local used = {}
 	for _, r in ipairs(d.rules) do
-		if r.app then used[r.app] = true end
+		if r.app and r.app ~= "" then used[r.app] = true end
 	end
 
 	lines[#lines + 1] = "table inet languard_qos {"
@@ -1610,7 +1610,7 @@ local function render_qos_rules()
 		local dscp = r.dscp or "cs1"
 		local conds = {}
 		if r.ip and r.ip ~= "" then conds[#conds + 1] = "ip saddr " .. r.ip end
-		if r.app then
+		if r.app and r.app ~= "" then
 			local name = set_name_for(r.app)
 			if ips[r.app] and #ips[r.app] > 0 then
 				conds[#conds + 1] = "ip daddr @" .. name
