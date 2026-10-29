@@ -821,3 +821,30 @@ msgstr "IP 冲突"
 
 msgid "this address is also claimed by"
 msgstr "该地址同时被以下 MAC 占用"
+
+msgid "Current mode"
+msgstr "当前模式"
+
+msgid "normal"
+msgstr "正常"
+
+msgid "blocking new devices only"
+msgstr "仅封禁新设备"
+
+msgid "since"
+msgstr "自"
+
+msgid "Back to normal"
+msgstr "恢复正常"
+
+msgid "Merge into"
+msgstr "合并到"
+
+msgid "merged interface(s)"
+msgstr "个已合并接口"
+
+msgid "Undo merge"
+msgstr "取消合并"
+
+msgid "this interface belongs to another device"
+msgstr "该网卡属于另一台设备"

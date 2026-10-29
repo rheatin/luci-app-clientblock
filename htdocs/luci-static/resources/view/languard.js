@@ -34,6 +34,8 @@ var callIpList = rpc.declare({
 });
 
 var callSync = rpc.declare({ object: 'luci.languard', method: 'sync' });
+var callDevMerge = rpc.declare({ object: 'luci.languard', method: 'devmerge', params: ['mac', 'into'] });
+var callDevUnmerge = rpc.declare({ object: 'luci.languard', method: 'devunmerge', params: ['mac'] });
 var callDomainList = rpc.declare({ object: 'luci.languard', method: 'domainlist' });
 var callDomainAdd = rpc.declare({ object: 'luci.languard', method: 'domainadd', params: ['name'] });
 var callDomainDel = rpc.declare({ object: 'luci.languard', method: 'domaindel', params: ['name'] });
@@ -800,7 +802,12 @@ return view.extend({
 
 		box.appendChild(E('div', { 'class': 'cb-card' }, [
 			E('div', { 'class': 'cb-card-head' }, [
-				E('span', { 'class': 'cb-dot' }), E('span', {}, _('Protection'))
+				E('span', { 'class': 'cb-dot', 'style': d.panic_on ? 'background:var(--danger)' : null }),
+				E('span', {}, _('Protection')),
+				d.panic_on
+					? E('span', { 'class': 'cb-src cb-src-panic', 'style': 'margin-left:auto' },
+						_('blocking new devices only'))
+					: ''
 			]),
 			E('div', { 'class': 'cb-card-body' }, E('div', { 'class': 'cb-dash-rows' }, [
 				row(_('Automatic protection'), d.auto_enabled
@@ -817,11 +824,22 @@ return view.extend({
 				row(_('Notification channels'), d.channels || 0),
 				row(_('Logins today'), (d.logins_ok_today || 0) + ' ' + _('ok') + ' · ' + (d.logins_fail_today || 0) + ' ' + _('failed')),
 				row(_('Failures in last 24h'), d.logins_fail_24h || 0),
-				E('div', { 'style': 'margin-top:.8rem;display:flex;gap:.5rem;flex-wrap:wrap' }, [
-					E('button', { 'class': 'cb-btn cb-btn-danger',
-						'click': function (ev) { self.handlePanic(true, ev); } }, _('Block new devices only')),
-					E('button', { 'class': 'cb-btn',
-						'click': function (ev) { self.handlePanic(false, ev); } }, _('Release'))
+				E('div', { 'class': 'cb-dash-row' }, [
+					E('span', { 'class': 'cb-k' }, _('Current mode')),
+					E('span', {
+						'class': 'cb-v',
+						'style': d.panic_on ? 'color:var(--danger)' : 'color:var(--success)'
+					}, d.panic_on
+						? _('blocking new devices only') +
+						  (d.panic_since ? ' · ' + _('since') + ' ' + fmtTime(d.panic_since) : '')
+						: _('normal'))
+				]),
+				E('div', { 'class': 'cb-actions', 'style': 'margin-top:.8rem' }, [
+					d.panic_on
+						? E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handlePanic(false, ev); } }, _('Back to normal'))
+						: E('button', { 'class': 'cb-btn cb-btn-danger',
+							'click': function (ev) { self.handlePanic(true, ev); } }, _('Block new devices only'))
 				])
 			]))
 		]));
@@ -2139,6 +2157,35 @@ return view.extend({
 				}, d.host || _('(unnamed)'))
 				: (d.host || E('span', { 'class': 'cb-mono' }, _('(unnamed)')));
 
+			// a container or VM on the same box answers with its own generated
+			// MAC; offer to fold it into the physical device
+			var mergeBtn = (d.local_mac && d.conflict)
+				? E('button', {
+					'class': 'cb-btn', 'style': 'margin-right:.3rem',
+					'title': _('this interface belongs to another device'),
+					'click': function () {
+						callDevMerge(d.mac, d.conflict).then(function () {
+							return self.refresh();
+						}).catch(function (e) {
+							ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+						});
+					}
+				}, _('Merge into') + ' ' + d.conflict)
+				: '';
+
+			var aliasNote = (d.aliases && d.aliases.length)
+				? E('div', { 'class': 'cb-drop', 'style': 'margin-top:.15rem' }, [
+					d.aliases.length + ' ' + _('merged interface(s)'),
+					E('button', {
+						'class': 'cb-proxyx', 'title': _('Undo merge'),
+						'click': function () {
+							callDevUnmerge(d.aliases[0]).then(function () { return self.refresh(); })
+								.catch(function () {});
+						}
+					}, '\u00d7')
+				])
+				: '';
+
 			tbody.appendChild(E('tr', { 'class': d.blocked ? 'cb-blocked' : (d.online ? '' : 'cb-offline') }, [
 				E('td', {}, [ stateBadge, newBadge, conflictBadge ]),
 				E('td', {}, [
@@ -2146,7 +2193,8 @@ return view.extend({
 					(d.vendor || d.device_type)
 						? E('div', { 'class': 'cb-drop cb-vendor', 'title': (d.vendor || '') + ' · ' + typeLabel(d.device_type) },
 							(d.vendor || _('unknown vendor')) + ' · ' + typeLabel(d.device_type))
-						: ''
+						: '',
+					aliasNote
 				]),
 				E('td', { 'class': 'cb-mono' }, d.ip || '-'),
 				E('td', { 'class': 'cb-mono cb-hide-sm' }, d.mac),
@@ -2154,7 +2202,7 @@ return view.extend({
 					? ((d.first_assumed ? '≈ ' : '') + fmtTime(d.first_seen))
 					: '-'),
 				E('td', { 'class': 'cb-hide-sm' }, d.blocked ? [ dropText, E('br'), E('span', { 'class': 'cb-drop' }, fmtTime(d.blocked_at)) ] : ''),
-				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [ trustBtn, action ])
+				E('td', { 'style': 'text-align:right;white-space:nowrap' }, [ mergeBtn, trustBtn, action ])
 			]));
 		});
 

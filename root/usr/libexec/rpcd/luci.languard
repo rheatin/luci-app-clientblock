@@ -23,6 +23,7 @@ local OUI_CACHE = STATE_DIR .. "/oui_cache.json"
 local KNOWN_FILE = STATE_DIR .. "/known_devices.json"
 local PROXY_FILE = STATE_DIR .. "/trusted_proxies.json"
 local ARP_FILE = STATE_DIR .. "/arp_guard.json"
+local ALIAS_FILE = STATE_DIR .. "/aliases.json"
 local DOMAIN_FILE = STATE_DIR .. "/domains.json"
 local DOMAIN_HOSTS = STATE_DIR .. "/domainblock.hosts"
 local NOTIFY_TMP = "/tmp/languard-notify.json"
@@ -1397,6 +1398,13 @@ function parse_static_hosts()
 	return map
 end
 
+-- A container or VM on a NAS answers ARP with its own generated MAC, so the
+-- same box shows up twice and looks like an address conflict. An alias maps
+-- such a MAC onto the device it belongs to; the row then folds into one.
+local function load_aliases()
+	return load_json_map(ALIAS_FILE, function() return {} end)
+end
+
 local function collect_devices()
 	local state = load_state()
 	local names = load_names()
@@ -1407,10 +1415,15 @@ local function collect_devices()
 
 	local seen = {}
 	local list = {}
+	local aliases = load_aliases()
 
 	local function add(mac, ip, host, online)
 		mac = normalize_mac(mac)
 		if not mac then return end
+		-- fold a virtual interface into its physical device
+		local target = aliases[mac]
+		if type(target) == "table" then target = target.into end
+		if target and target ~= mac then mac = target end
 		if seen[mac] then
 			local e = seen[mac]
 			e.ip = e.ip or ip
@@ -1484,6 +1497,15 @@ local function collect_devices()
 					end
 				end
 			end
+		end
+	end
+
+	for virtual, target in pairs(aliases) do
+		local into = type(target) == "table" and target.into or target
+		local e = into and seen[normalize_mac(into)]
+		if e then
+			e.aliases = e.aliases or {}
+			e.aliases[#e.aliases + 1] = virtual
 		end
 	end
 
@@ -1935,6 +1957,27 @@ end
 
 -- Trusted proxies: addresses whose log lines carry the real client in a
 -- forwarding header. They are never blocked and never counted as an attacker.
+function methods.devmerge(mac, into)
+	local a = normalize_mac(mac)
+	local b = normalize_mac(into)
+	if not a or not b or a == b then return err("invalid mac") end
+	local aliases = load_aliases()
+	if aliases[b] then return err("target is itself an alias") end
+	aliases[a] = { into = b, since = os.time() }
+	save_json_map(ALIAS_FILE, aliases)
+	return ok({ mac = a, into = b })
+end
+
+function methods.devunmerge(mac)
+	local a = normalize_mac(mac)
+	if not a then return err("invalid mac") end
+	local aliases = load_aliases()
+	if aliases[a] == nil then return err("not an alias") end
+	aliases[a] = nil
+	save_json_map(ALIAS_FILE, aliases)
+	return ok({})
+end
+
 function methods.proxylist()
 	local p = load_json_map(PROXY_FILE, function() return {} end)
 	local keys = {}
@@ -3238,6 +3281,7 @@ function methods.dashboard()
 		auto_enabled = cfg.enabled, threshold = cfg.threshold, window = cfg.window, ttl = cfg.ttl,
 		health_ok = sc.ok, health_failing = failing,
 		trusted = n_trusted, pending = n_pending,
+		panic_on = load_panic().on and true or false, panic_since = load_panic().since,
 		arp_24h = arp_24h, arp_recent = arp_recent,
 		recent = recent,
 	}
@@ -3316,6 +3360,8 @@ if arg[1] == "list" then
 		feeddel     = { id = "" },
 		feedrefresh = { id = "" },
 		feedset     = { id = "", interval = "" },
+		devmerge    = { mac = "", into = "" },
+		devunmerge  = { mac = "" },
 		domainlist  = {},
 		domainadd   = { name = "" },
 		domaindel   = { name = "" },
@@ -3498,6 +3544,10 @@ elseif arg[1] == "call" then
 		res = methods.feedrefresh(req.id)
 	elseif name == "feedset" then
 		res = methods.feedset(req.id, req.interval)
+	elseif name == "devmerge" then
+		res = methods.devmerge(req.mac, req.into)
+	elseif name == "devunmerge" then
+		res = methods.devunmerge(req.mac)
 	elseif name == "domainlist" then
 		res = methods.domainlist()
 		reply_list(res, { "domains" })
