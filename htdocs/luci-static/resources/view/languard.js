@@ -1104,30 +1104,82 @@ return view.extend({
 		if (!list.length) {
 			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
 				_('No traffic attributed yet'))));
+			this.renderAppDevices();
 			return;
 		}
 		list.slice(0, 50).forEach(function (a) {
 			var meta = null;
 			(self.apps || []).forEach(function (x) { if (x.name === a.name) meta = x; });
-			tbody.appendChild(E('tr', {}, [
-				E('td', { 'class': 'cb-u' }, a.name),
+			var active = self.appFilter === a.name;
+			tbody.appendChild(E('tr', {
+				'style': 'cursor:pointer' + (active ? ';background:var(--brand-subtle)' : ''),
+				'click': function () {
+					self.appFilter = active ? null : a.name;
+					self.renderAppStats();
+				}
+			}, [
+				E('td', { 'class': 'cb-u' }, [
+					a.name,
+					a.low > 0
+						? E('span', { 'class': 'cb-src cb-src-panic', 'style': 'margin-left:.35rem',
+							'title': _('part of this was matched by port only, without checking the packet') },
+							_('port match'))
+						: ''
+				]),
 				E('td', { 'class': 'cb-hide-sm' }, meta ? (meta.class || '') : ''),
 				E('td', { 'class': 'cb-hide-sm cb-t' }, meta ? String(meta.sigs) : ''),
 				E('td', { 'style': 'text-align:right;font-family:var(--font-mono)' }, fmtBytes(a.bytes))
 			]));
 		});
+		this.renderAppDevices();
+	},
 
+	renderAppDevices: function () {
 		var box = document.getElementById('cb-app-dev');
 		if (!box) return;
+		var self = this;
 		while (box.firstChild) box.removeChild(box.firstChild);
+
 		var devs = (this.appStats && this.appStats.dev) || [];
+		var filter = this.appFilter;
+
+		if (filter) {
+			box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
+				E('span', { 'class': 'cb-k' }, _('Devices using') + ' ' + filter),
+				E('button', { 'class': 'cb-btn', 'style': 'margin-left:auto',
+					'click': function () { self.appFilter = null; self.renderAppStats(); } },
+					_('Show all'))
+			]));
+			var users = [];
+			devs.forEach(function (d) {
+				(d.apps || []).forEach(function (x) {
+					if (x.name === filter) users.push({ dev: d, bytes: x.bytes });
+				});
+			});
+			users.sort(function (a, b) { return b.bytes - a.bytes; });
+			if (!users.length) {
+				box.appendChild(E('span', { 'class': 'cb-note' }, _('None')));
+				return;
+			}
+			users.forEach(function (u) {
+				box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
+					E('span', { 'class': 'cb-k' }, (u.dev.name || u.dev.ip) + ' · ' + u.dev.ip),
+					E('span', { 'class': 'cb-v' }, fmtBytes(u.bytes))
+				]));
+			});
+			return;
+		}
+
 		if (!devs.length) {
 			box.appendChild(E('span', { 'class': 'cb-note' }, _('None')));
 			return;
 		}
 		devs.slice(0, 20).forEach(function (d) {
 			box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
-				E('span', { 'class': 'cb-k' }, d.ip),
+				E('span', { 'class': 'cb-k' }, [
+					(d.name || d.ip),
+					E('span', { 'class': 'cb-drop' }, '  ' + d.ip)
+				]),
 				E('span', { 'class': 'cb-v' }, d.apps.slice(0, 3).map(function (x) {
 					return x.name + ' ' + fmtBytes(x.bytes);
 				}).join(' · '))

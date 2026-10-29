@@ -890,3 +890,15 @@ msgstr "清空流量统计？"
 
 msgid "total"
 msgstr "共"
+
+msgid "port match"
+msgstr "端口匹配"
+
+msgid "Devices using"
+msgstr "使用该应用的设备"
+
+msgid "Show all"
+msgstr "显示全部"
+
+msgid "part of this was matched by port only, without checking the packet"
+msgstr "其中一部分仅按端口匹配，未校验数据包内容"

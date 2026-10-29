@@ -48,6 +48,7 @@ local render_rules, reload_firewall, load_json_map, save_json_map
 local split_macs, load_ports
 local notify_event
 local load_domains, save_domains, is_domain_token, apply_domains
+local collect_devices
 
 
 local function trim(s)
@@ -1181,11 +1182,15 @@ end
 -- (a game's 6000-9000 range). The same signature on 443 would attribute the
 -- entire web to one app, so those are dropped at import: in the source they
 -- carry a payload fingerprint we cannot evaluate without packet capture.
-local function sig_usable(sig)
+local function sig_usable(sig, cls)
 	if (sig.host and sig.host ~= "") or (sig.ip and sig.ip ~= "") then
 		return true
 	end
 	if not sig.dport or sig.dport == "" then return false end
+	-- only games are identified by port alone; a video app matched on a bare
+	-- UDP port would swallow unrelated traffic (Douyin claimed torrents on
+	-- port 16000 before this check)
+	if cls ~= "game" then return false end
 	for p in sig.dport:gmatch("%d+") do
 		local n = tonumber(p)
 		if n == 80 or n == 443 or n == 8080 then return false end
@@ -1207,10 +1212,17 @@ local function sig_matches(sig, proto, port, ip, host)
 	return true
 end
 
+-- Returns the app and how it was recognised. A match on the hostname or an
+-- address range is trustworthy; a bare port is a guess, because nothing in
+-- the packet was checked.
 local function classify_flow(apps, proto, port, ip, host)
 	for _, app in ipairs(apps.apps) do
 		for _, sig in ipairs(app.sigs or {}) do
-			if sig_matches(sig, proto, port, ip, host) then return app end
+			if sig_matches(sig, proto, port, ip, host) then
+				local conf = ((sig.host and sig.host ~= "") or (sig.ip and sig.ip ~= ""))
+					and "high" or "low"
+				return app, conf
+			end
 		end
 	end
 	return nil
@@ -1233,10 +1245,14 @@ local function clash_secret()
 	return y:match("secret:%s*'([^']+)'") or y:match('secret:%s*"([^"]+)"')
 end
 
-local function record(st, app_name, dev_ip, bytes)
+local function record(st, app_name, dev_ip, bytes, conf)
 	st.apps[app_name] = (st.apps[app_name] or 0) + bytes
 	st.dev[dev_ip] = st.dev[dev_ip] or {}
 	st.dev[dev_ip][app_name] = (st.dev[dev_ip][app_name] or 0) + bytes
+	if conf == "low" then
+		st.low = st.low or {}
+		st.low[app_name] = (st.low[app_name] or 0) + bytes
+	end
 end
 
 local function collect_clash_stats(now, apps, st)
@@ -1261,10 +1277,10 @@ local function collect_clash_stats(now, apps, st)
 			local prev = tonumber((seen[key] or {}).b) or 0
 			local delta = total - prev
 			if delta > 0 then
-				local app = classify_flow(apps, (m.network or ""):lower(),
+				local app, conf = classify_flow(apps, (m.network or ""):lower(),
 					tonumber(m.destinationPort) or 0, m.destinationIP, host)
 				if app then
-					record(st, app.name, dev, delta)
+					record(st, app.name, dev, delta, conf)
 					counted = counted + delta
 				end
 			end
@@ -1315,18 +1331,22 @@ local function collect_app_stats(now)
 				local delta = total - (prev and tonumber(prev.b) or 0)
 				if delta < 0 then delta = 0 end
 
-				-- the LAN side identifies the device, the other side the app
+				-- the LAN side identifies the device, the other side the app.
+				-- a flow with no LAN end (router to internet) has no device and
+				-- must not be attributed to the WAN address
+				local src_lan = src:sub(1, #prefix) == prefix
+				local dst_lan = dst:sub(1, #prefix) == prefix
 				local dev_ip, remote_ip, remote_port
-				if src:sub(1, #prefix) == prefix then
+				if src_lan and not dst_lan then
 					dev_ip, remote_ip, remote_port = src, dst, tonumber(dport)
-				else
+				elseif dst_lan and not src_lan then
 					dev_ip, remote_ip, remote_port = dst, src, tonumber(sport)
 				end
 
-				if delta > 0 then
-					local app = classify_flow(apps, proto, remote_port, remote_ip, nil)
+				if delta > 0 and dev_ip then
+					local app, conf = classify_flow(apps, proto, remote_port, remote_ip, nil)
 					if app then
-						record(st, app.name, dev_ip, delta)
+						record(st, app.name, dev_ip, delta, conf)
 						counted = counted + delta
 					end
 				end
@@ -1369,21 +1389,43 @@ function methods.appstats()
 	local st = load_json_map(APPSTAT_FILE, function() return { day = "", apps = {}, dev = {} } end)
 	local names = {}
 	for name, bytes in pairs(st.apps or {}) do
-		names[#names + 1] = { name = name, bytes = bytes }
+		names[#names + 1] = { name = name, bytes = bytes,
+		                      low = (st.low or {})[name] or 0 }
 	end
 	table.sort(names, function(a, b) return a.bytes > b.bytes end)
-	local devs = {}
+	-- an address is only useful once it has a device behind it
+	local by_ip = {}
+	for _, d in ipairs(collect_devices()) do
+		if d.ip then by_ip[d.ip] = d end
+	end
+
+	local devs, per_app = {}, {}
 	for ip, m in pairs(st.dev or {}) do
-		local row = { ip = ip, bytes = 0, apps = {} }
+		local d = by_ip[ip]
+		local row = { ip = ip, bytes = 0, apps = {},
+		              mac = d and d.mac or nil,
+		              name = d and (d.host or d.mac) or nil,
+		              vendor = d and d.vendor or nil }
 		for name, bytes in pairs(m) do
 			row.bytes = row.bytes + bytes
 			row.apps[#row.apps + 1] = { name = name, bytes = bytes }
+			per_app[name] = per_app[name] or {}
+			per_app[name][#per_app[name] + 1] = {
+				ip = ip, bytes = bytes,
+				name = d and (d.host or d.mac) or nil,
+				mac = d and d.mac or nil,
+			}
 		end
 		table.sort(row.apps, function(a, b) return a.bytes > b.bytes end)
 		devs[#devs + 1] = row
 	end
 	table.sort(devs, function(a, b) return a.bytes > b.bytes end)
-	return { success = true, running = true, day = st.day or "", apps = names, dev = devs }
+	for _, list in pairs(per_app) do
+		table.sort(list, function(a, b) return a.bytes > b.bytes end)
+	end
+
+	return { success = true, running = true, day = st.day or "", apps = names,
+	         dev = devs, per_app = per_app }
 end
 
 function methods.appreset()
@@ -1417,7 +1459,7 @@ function methods.appimport(text)
 					for v in (part .. ";"):gmatch("([^;]*);") do f[#f + 1] = trim(v) end
 					while #f < 6 do f[#f + 1] = "" end
 					local sig = { proto = f[1], dport = f[3], host = f[4], dict = f[6] }
-					if sig_usable(sig) then sigs[#sigs + 1] = sig end
+					if sig_usable(sig, cls) then sigs[#sigs + 1] = sig end
 				end
 				if #sigs > 0 then
 					local ex = by_name[name]
@@ -1732,7 +1774,7 @@ local function load_aliases()
 	return load_json_map(ALIAS_FILE, function() return {} end)
 end
 
-local function collect_devices()
+collect_devices = function()
 	local state = load_state()
 	local names = load_names()
 	local leases = parse_leases()
