@@ -34,6 +34,11 @@ var callIpList = rpc.declare({
 });
 
 var callSync = rpc.declare({ object: 'luci.languard', method: 'sync' });
+var callAppList = rpc.declare({ object: 'luci.languard', method: 'applist' });
+var callAppStats = rpc.declare({ object: 'luci.languard', method: 'appstats' });
+var callAppImport = rpc.declare({ object: 'luci.languard', method: 'appimport', params: ['text'] });
+var callAppDel = rpc.declare({ object: 'luci.languard', method: 'appdel', params: ['id'] });
+var callAppReset = rpc.declare({ object: 'luci.languard', method: 'appreset' });
 var callDevMerge = rpc.declare({ object: 'luci.languard', method: 'devmerge', params: ['mac', 'into'] });
 var callDevUnmerge = rpc.declare({ object: 'luci.languard', method: 'devunmerge', params: ['mac'] });
 var callDomainList = rpc.declare({ object: 'luci.languard', method: 'domainlist' });
@@ -398,6 +403,9 @@ var STYLE = `
 
 /* ---- loading skeleton ---- */
 .cb-tablewrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.cb-import { width: 100%; box-sizing: border-box; font-family: var(--font-mono);
+	font-size: .78rem; padding: .5rem; border-radius: .3rem; resize: vertical;
+	border: 1px solid var(--hairline); background: var(--surface-sunken); color: inherit; }
 .cb-sel { padding: .25rem .4rem; border-radius: .3rem; border: 1px solid var(--hairline);
 	background: transparent; color: inherit; font-size: .8rem; }
 @media (max-width: 768px) { .cb-log .cb-date { display: none; } }
@@ -1062,6 +1070,96 @@ return view.extend({
 		}).catch(function (e) {
 			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
 		});
+	},
+
+	refreshApps: function () {
+		var self = this;
+		return callAppList().then(function (res) {
+			self.apps = (res && res.apps) || [];
+			var cnt = document.getElementById('cb-app-count');
+			if (cnt) cnt.textContent = self.apps.length + ' ' + _('apps');
+		}).catch(function () {});
+	},
+
+	refreshAppStats: function () {
+		var self = this;
+		return Promise.all([ callAppList(), callAppStats() ]).then(function (r) {
+			self.apps = (r[0] && r[0].apps) || [];
+			self.appStats = r[1] || {};
+			self.renderAppStats();
+			var cnt = document.getElementById('cb-app-count');
+			if (cnt) cnt.textContent = self.apps.length + ' ' + _('apps');
+			var day = document.getElementById('cb-app-day');
+			if (day) day.textContent = self.appStats.day || '';
+		}).catch(function () {});
+	},
+
+	renderAppStats: function () {
+		var tbody = document.getElementById('cb-app-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var self = this;
+		var list = (this.appStats && this.appStats.apps) || [];
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 4, 'class': 'cb-empty' },
+				_('No traffic attributed yet'))));
+			return;
+		}
+		list.slice(0, 50).forEach(function (a) {
+			var meta = null;
+			(self.apps || []).forEach(function (x) { if (x.name === a.name) meta = x; });
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-u' }, a.name),
+				E('td', { 'class': 'cb-hide-sm' }, meta ? (meta.class || '') : ''),
+				E('td', { 'class': 'cb-hide-sm cb-t' }, meta ? String(meta.sigs) : ''),
+				E('td', { 'style': 'text-align:right;font-family:var(--font-mono)' }, fmtBytes(a.bytes))
+			]));
+		});
+
+		var box = document.getElementById('cb-app-dev');
+		if (!box) return;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		var devs = (this.appStats && this.appStats.dev) || [];
+		if (!devs.length) {
+			box.appendChild(E('span', { 'class': 'cb-note' }, _('None')));
+			return;
+		}
+		devs.slice(0, 20).forEach(function (d) {
+			box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
+				E('span', { 'class': 'cb-k' }, d.ip),
+				E('span', { 'class': 'cb-v' }, d.apps.slice(0, 3).map(function (x) {
+					return x.name + ' ' + fmtBytes(x.bytes);
+				}).join(' · '))
+			]));
+		});
+	},
+
+	handleAppImport: function (ev) {
+		var self = this;
+		var ta = document.getElementById('cb-app-import');
+		if (!ta || !ta.value.trim()) { if (ta) ta.focus(); return; }
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callAppImport(ta.value).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			ta.value = '';
+			ui.addNotification(null, E('p', {},
+				_('Imported') + ' ' + (res.added || 0) + ' · ' + _('total') + ' ' + (res.total || 0)), 'info');
+			return self.refreshAppStats();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleAppReset: function (ev) {
+		var self = this;
+		if (!confirm(_('Reset the traffic counters?'))) return;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callAppReset().then(function () { return self.refreshAppStats(); })
+			.catch(function () {})
+			.finally(function () { btn.disabled = false; });
 	},
 
 	refreshTrend: function () {
@@ -2058,6 +2156,7 @@ return view.extend({
 		overview: [ 'dash' ],
 		devices: [ 'devices' ],
 		ips: [ 'ips' ],
+		apps: [ 'apps' ],
 		logs: [ 'logs' ],
 		policy: [ 'sched' ],
 		settings: [ 'auto', 'notify', 'health', 'backup' ]
@@ -2073,12 +2172,13 @@ return view.extend({
 			var el = document.getElementById('cb-pane-' + p);
 			if (el) el.classList.toggle('active', mine.indexOf(p) !== -1);
 		});
-		['overview', 'devices', 'ips', 'logs', 'policy', 'settings'].forEach(function (t) {
+		['overview', 'devices', 'ips', 'apps', 'logs', 'policy', 'settings'].forEach(function (t) {
 			var btn = document.getElementById('cb-tab-' + t);
 			if (btn) btn.classList.toggle('active', t === name);
 		});
 		if (name === 'overview') return this.refreshDash();
 		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds(), this.refreshDomains() ]);
+		if (name === 'apps') return Promise.all([ this.refreshApps(), this.refreshAppStats() ]);
 		if (name === 'logs') return this.refreshLogs();
 		if (name === 'policy') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'settings') {
@@ -2494,6 +2594,62 @@ return view.extend({
 			])
 		]);
 
+		var appsPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-apps'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Traffic attributed to applications. Proxied flows are named by the hostname Clash reports; everything else is matched from the router flow table by port or address range.')),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Traffic by app')),
+					E('span', { 'class': 'cb-count', 'id': 'cb-app-day', 'style': 'margin-left:auto' }, '')
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('App')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Class')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Rules')),
+								E('th', { 'style': 'text-align:right' }, _('Traffic'))
+							])),
+							E('tbody', { 'id': 'cb-app-tbody' })
+						])
+					]),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-top:.7rem' }, [
+						E('button', { 'class': 'cb-btn', 'click': function (ev) { self.refreshAppStats(ev); } }, _('Refresh')),
+						E('button', { 'class': 'cb-btn cb-btn-danger', 'click': function (ev) { self.handleAppReset(ev); } }, _('Reset counters'))
+					])
+				])
+			]),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('By device'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, E('div', { 'id': 'cb-app-dev', 'class': 'cb-dash-rows' }))
+			]),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Signature library'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('p', { 'class': 'cb-note' },
+						_('Paste a feature library (OAF format v3.0) to import it. Entries are matched by hostname, address range or a distinctive port; signatures that only name port 80/443 are skipped because they would claim the whole web.')),
+					E('textarea', {
+						'id': 'cb-app-import', 'class': 'cb-import',
+						'rows': '6', 'placeholder': '#class game 2 游戏\n2001 王者荣耀:[tcp;;6000-9000;;;]'
+					}),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-top:.6rem' }, [
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleAppImport(ev); } }, _('Import')),
+						E('span', { 'class': 'cb-count', 'id': 'cb-app-count' }, '')
+					])
+				])
+			])
+		]);
+
 		var logsPane = E('div', {
 			'class': 'cb-pane',
 			'id': 'cb-pane-logs'
@@ -2664,6 +2820,7 @@ return view.extend({
 				tabBtn('overview', _('Overview')),
 				tabBtn('devices', _('Devices')),
 				tabBtn('ips', _('Addresses')),
+				tabBtn('apps', _('Apps')),
 				tabBtn('logs', _('Log')),
 				tabBtn('policy', _('Policy')),
 				tabBtn('settings', _('Settings'))
@@ -2671,6 +2828,7 @@ return view.extend({
 			dashPane,
 			devicesPane,
 			ipsPane,
+			appsPane,
 			autoPane,
 			backupPane,
 			logsPane,

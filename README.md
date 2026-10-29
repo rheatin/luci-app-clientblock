@@ -295,6 +295,29 @@ ubus call luci.languard logclear
 
 本地管理地址（Docker `02:42:xx`、虚拟机、手机私有 Wi-Fi 地址）不参与厂商查询，因为它们在规范上就没有厂商。
 
+## 应用识别
+
+「应用」标签页按应用统计流量。识别分两路：
+
+| 流量 | 来源 | 依据 |
+|---|---|---|
+| 走 Clash 代理 | Clash 的 `/connections` 接口 | 真实主机名（路由器看到的是假 IP，只有 Clash 知道域名） |
+| 直连 / UDP 游戏 | 路由器 conntrack 流表 | 端口范围、地址段 |
+
+**特征库可导入 OAF 格式**（`#format v3.0`）：
+
+```
+#class game 2 游戏
+2001 王者荣耀:[tcp;;6000-9000;;;]
+2023 原神:[tcp;;443;yuanshen.com;;]
+```
+
+导入时会**丢弃只写 80/443 端口的签名**——那些在原库里是靠载荷指纹识别的，
+没有抓包就等同于「匹配所有 HTTPS」，会把整条网页流量算到一个应用上。
+
+数据来源：Clash 的 secret 从 `uci get openclash.config.dashboard_password` 读取，
+读不到则回退到 `/etc/openclash/config/default.yaml`。
+
 ## 订阅定期刷新
 
 每个订阅带一个刷新频率（手动 / 每小时 / 每 6 小时 / 每天 / 每周，默认每天）。

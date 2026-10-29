@@ -848,3 +848,45 @@ msgstr "取消合并"
 
 msgid "this interface belongs to another device"
 msgstr "该网卡属于另一台设备"
+
+msgid "Apps"
+msgstr "应用"
+
+msgid "Traffic by app"
+msgstr "应用流量"
+
+msgid "App"
+msgstr "应用"
+
+msgid "Class"
+msgstr "分类"
+
+msgid "Rules"
+msgstr "规则数"
+
+msgid "Traffic"
+msgstr "流量"
+
+msgid "By device"
+msgstr "按设备"
+
+msgid "Signature library"
+msgstr "特征库"
+
+msgid "Reset counters"
+msgstr "清空统计"
+
+msgid "No traffic attributed yet"
+msgstr "还没有识别到流量"
+
+msgid "Traffic attributed to applications. Proxied flows are named by the hostname Clash reports; everything else is matched from the router flow table by port or address range."
+msgstr "按应用统计的流量。走代理的流由 Clash 上报的主机名识别；其余按端口或地址段从路由器的流表匹配。"
+
+msgid "Paste a feature library (OAF format v3.0) to import it. Entries are matched by hostname, address range or a distinctive port; signatures that only name port 80/443 are skipped because they would claim the whole web."
+msgstr "粘贴特征库（OAF 格式 v3.0）即可导入。条目按主机名、地址段或具有辨识度的端口匹配；只写 80/443 端口的签名会被跳过，否则会把整个网页流量都算到一个应用上。"
+
+msgid "Reset the traffic counters?"
+msgstr "清空流量统计？"
+
+msgid "total"
+msgstr "共"
