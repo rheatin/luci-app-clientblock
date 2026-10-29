@@ -33,6 +33,7 @@ var callIpList = rpc.declare({
 	params: ['limit', 'cat']
 });
 
+var callSync = rpc.declare({ object: 'luci.languard', method: 'sync' });
 var callDomainList = rpc.declare({ object: 'luci.languard', method: 'domainlist' });
 var callDomainAdd = rpc.declare({ object: 'luci.languard', method: 'domainadd', params: ['name'] });
 var callDomainDel = rpc.declare({ object: 'luci.languard', method: 'domaindel', params: ['name'] });
@@ -840,9 +841,12 @@ return view.extend({
 					});
 					wrap.appendChild(list);
 				}
-				wrap.appendChild(E('div', { 'style': 'margin-top:.7rem' },
+				wrap.appendChild(E('div', { 'class': 'cb-actions', 'style': 'margin-top:.7rem' }, [
 					E('button', { 'class': 'cb-btn cb-btn-primary',
-						'click': function (ev) { self.refreshDash(); } }, _('Refresh'))));
+						'click': function (ev) { self.refreshDash(); } }, _('Refresh')),
+					!d.health_ok ? E('button', { 'class': 'cb-btn',
+						'click': function (ev) { self.handleSync(ev); } }, _('Sync to kernel')) : ''
+				]));
 				return wrap;
 			})())
 		]);
@@ -1405,6 +1409,20 @@ return view.extend({
 		});
 	},
 
+	// Rebuild the two kernel sets from saved state. This only touches set
+	// elements, so it is safe to run while the LAN is busy.
+	handleSync: function (ev) {
+		var self = this;
+		var btn = ev && ev.currentTarget;
+		if (btn) btn.disabled = true;
+		return callSync().then(function () {
+			ui.addNotification(null, E('p', {}, _('Kernel set rebuilt from saved state')), 'info');
+			return Promise.all([ self.refreshHealth(), self.refreshDash() ]);
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { if (btn) btn.disabled = false; });
+	},
+
 	refreshHealth: function () {
 		var self = this;
 		return callSelfCheck().then(function (res) {
@@ -1448,13 +1466,26 @@ return view.extend({
 			return;
 		}
 
+		var self = this;
+		var FIXABLE = { nftset: 1, rulesfile: 1, nfthook: 1 };
+
 		list.forEach(function (c) {
 			var bad = !c.ok;
+			var extra = [];
+			if (bad && c.hint) extra.push(E('span', { 'class': 'cb-hint' }, c.hint));
+			if (bad && FIXABLE[c.id]) {
+				extra.push(E('span', { 'class': 'cb-hint' },
+					E('button', {
+						'class': 'cb-btn cb-btn-primary',
+						'style': 'font-size:.75rem;padding:.1rem .55rem',
+						'click': function (ev) { self.handleSync(ev); }
+					}, _('Fix now'))));
+			}
 			box.appendChild(E('div', { 'class': 'cb-check' + (bad ? ' bad' : '') }, [
 				E('span', { 'class': 'cb-mark ' + (bad ? 'bad' : 'ok') }, bad ? '\u2715' : '\u2713'),
 				E('span', { 'class': 'cb-name' }, names[c.id] || c.id),
 				E('span', { 'class': 'cb-val' }, c.detail || '')
-			].concat(bad && c.hint ? [ E('span', { 'class': 'cb-hint' }, c.hint) ] : [])));
+			].concat(extra)));
 		});
 	},
 
@@ -2565,7 +2596,9 @@ return view.extend({
 			E('div', { 'class': 'cb-health-head' }, [
 				E('span', { 'id': 'cb-health-head', 'style': 'display:flex;gap:.5rem;align-items:center' }),
 				E('button', { 'class': 'cb-btn', 'style': 'margin-left:auto',
-					'click': function (ev) { self.refreshHealth(); } }, _('Re-run'))
+					'click': function (ev) { self.refreshHealth(); } }, _('Re-run')),
+				E('button', { 'class': 'cb-btn',
+					'click': function (ev) { self.handleSync(ev); } }, _('Sync to kernel'))
 			]),
 			E('div', { 'class': 'cb-checks', 'id': 'cb-health-body' })
 		]);

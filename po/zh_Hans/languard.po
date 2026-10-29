@@ -806,3 +806,12 @@ msgstr "已启用"
 
 msgid "Domains are answered with 0.0.0.0 and :: by dnsmasq, so the whole LAN is covered without touching the firewall. Feed entries that are hostnames land here instead of the address list."
 msgstr "域名由 dnsmasq 应答为 0.0.0.0 与 ::，整个局域网立即生效，不需要动防火墙。订阅里的主机名会进到这里而不是地址列表。"
+
+msgid "Fix now"
+msgstr "立即修复"
+
+msgid "Sync to kernel"
+msgstr "同步到内核"
+
+msgid "Kernel set rebuilt from saved state"
+msgstr "已按保存的状态重建内核集合"
