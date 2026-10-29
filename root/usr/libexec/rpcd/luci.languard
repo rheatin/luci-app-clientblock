@@ -29,6 +29,7 @@ local APPSTAT_FILE = STATE_DIR .. "/appstats.json"
 local CT_SEEN_FILE = STATE_DIR .. "/ct_seen.json"
 local APPIPS_FILE = STATE_DIR .. "/app_ips.json"
 local QOS_FILE = STATE_DIR .. "/app_qos.json"
+local FINGERPRINT_FILE = STATE_DIR .. "/fingerprint.json"
 local QOS_RULE_FILE = "/etc/nftables.d/91-languard-appqos.nft"
 local DOMAIN_FILE = STATE_DIR .. "/domains.json"
 local DOMAIN_HOSTS = STATE_DIR .. "/domainblock.hosts"
@@ -1681,6 +1682,176 @@ function methods.qosdel(id)
 	save_json_map(QOS_FILE, d)
 	apply_qos()
 	return ok({})
+end
+
+
+-- ---- payload fingerprint sampling --------------------------------------
+-- A signature that names only a port is a guess. When it also carries a byte
+-- pattern ("00:33|1:66|02:00|03:0a" = offset:value), the first bytes of the
+-- flow settle it. Capturing every packet would be wasteful, so the filter
+-- only asks for the ports that actually have a fingerprint, and only a few
+-- hundred packets per run are inspected.
+local function fingerprint_ports(apps)
+	local specs, seen = {}, {}
+	for _, a in ipairs(apps.apps) do
+		for _, sig in ipairs(a.sigs or {}) do
+			if sig.dict and sig.dict ~= "" and sig.dport and sig.dport ~= ""
+			   and not seen[sig.dport] then
+				seen[sig.dport] = true
+				specs[#specs + 1] = sig.dport
+			end
+		end
+	end
+	if #specs == 0 then return nil end
+	local parts = {}
+	for i, spec in ipairs(specs) do
+		if i > 12 then break end
+		local lo, hi = spec:match("^(%d+)%-(%d+)$")
+		if lo then
+			parts[#parts + 1] = "(portrange " .. lo .. "-" .. hi .. ")"
+		else
+			parts[#parts + 1] = "(port " .. spec .. ")"
+		end
+	end
+	return table.concat(parts, " or ")
+end
+
+-- "00:33|1:66|02:00" and "00:73:01:00:02:00" are both offset:value lists
+local function dict_match(dict, payload)
+	if not dict or dict == "" then return false end
+	local parts = {}
+	for chunk in dict:gmatch("[^|]+") do
+		local colon = 0
+		for _ in chunk:gmatch(":") do colon = colon + 1 end
+		if colon > 1 then
+			local nums = {}
+			for n in chunk:gmatch("[^:]+") do nums[#nums + 1] = n end
+			for i = 1, #nums - 1, 2 do
+				parts[#parts + 1] = nums[i] .. ":" .. nums[i + 1]
+			end
+		else
+			parts[#parts + 1] = chunk
+		end
+	end
+	local checked = 0
+	for _, p in ipairs(parts) do
+		local off, val = p:match("^(%d+):(%x+)$")
+		if off then
+			local o, v = tonumber(off), tonumber(val, 16)
+			local b = payload:byte(o + 1)
+			if b == nil or b ~= v then return false end
+			checked = checked + 1
+		end
+	end
+	return checked > 0
+end
+
+local function pcap_u32(s, i, le)
+	local a, b, c, d = s:byte(i, i + 3)
+	if not a then return nil end
+	if le then return a + b * 256 + c * 65536 + d * 16777216 end
+	return d + c * 256 + b * 65536 + a * 16777216
+end
+
+local function pcap_u16(s, i, le)
+	local a, b = s:byte(i, i + 1)
+	if not a then return nil end
+	if le then return a + b * 256 end
+	return b + a * 256
+end
+
+-- Walk the capture and hand back one {proto, dst, dport, payload} per packet.
+local function parse_pcap(data)
+	local magic = pcap_u32(data, 1, true)
+	local le = (magic == 0xa1b2c3d4)
+	local pos = 25
+	local out = {}
+	while pos + 16 <= #data do
+		local incl = pcap_u32(data, pos + 8, le)
+		if not incl or incl == 0 then break end
+		local pkt = data:sub(pos + 16, pos + 15 + incl)
+		pos = pos + 16 + incl
+		if #pkt >= 34 then
+			local etype = pcap_u16(pkt, 13, false)
+			local off = 14
+			if etype == 0x8100 then
+				etype = pcap_u16(pkt, 17, false)
+				off = 18
+			end
+			if etype == 0x0800 then
+				local ipoff = off + 1
+				local vihl = pkt:byte(ipoff)
+				if vihl then
+					local ihl = (vihl % 16) * 4
+					local proto = pkt:byte(ipoff + 9)
+					local dst = table.concat({ pkt:byte(ipoff + 16, ipoff + 19) }, ".")
+					local l4 = ipoff + ihl
+					local sport, dport, pl
+					if proto == 17 then
+						sport = pcap_u16(pkt, l4, false)
+						dport = pcap_u16(pkt, l4 + 2, false)
+						pl = pkt:sub(l4 + 8)
+					elseif proto == 6 then
+						sport = pcap_u16(pkt, l4, false)
+						dport = pcap_u16(pkt, l4 + 2, false)
+						local doff = math.floor((pkt:byte(l4 + 12) or 0) / 16) * 4
+						pl = pkt:sub(l4 + doff)
+					end
+					if dport then
+						out[#out + 1] = {
+							proto = (proto == 17) and "udp" or "tcp",
+							dst = dst, dport = dport, payload = pl or "",
+						}
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
+local function fingerprint_scan(apps, now)
+	local filter = fingerprint_ports(apps)
+	if not filter then return nil end
+	local cap = "/tmp/lg_fingerprint.pcap"
+	os.remove(cap)
+	sys.call(string.format(
+		"timeout 4 tcpdump -i br-lan -s 96 -c 250 -w %s %s 2>/dev/null", cap, shq(filter)))
+	local f = io.open(cap, "rb")
+	if not f then return nil end
+	local data = f:read("*a")
+	f:close()
+	os.remove(cap)
+	if not data or #data < 24 then return nil end
+
+	local packets = parse_pcap(data)
+	local hit, learned = 0, 0
+	local st = load_json_map(FINGERPRINT_FILE, function() return {} end)
+
+	for _, p in ipairs(packets) do
+		if #p.payload >= 6 then
+			for _, a in ipairs(apps.apps) do
+				local matched = false
+				for _, sig in ipairs(a.sigs or {}) do
+					if sig.dict and sig.dict ~= "" and sig.proto == p.proto
+					   and port_in(sig.dport, p.dport)
+					   and dict_match(sig.dict, p.payload) then
+						matched = true
+						break
+					end
+				end
+				if matched then
+					hit = hit + 1
+					st[a.name] = { ts = now, hits = ((st[a.name] or {}).hits or 0) + 1 }
+					learn_app_ip(a.name, p.dst)
+					learned = learned + 1
+					break
+				end
+			end
+		end
+	end
+	if hit > 0 then save_json_map(FINGERPRINT_FILE, st) end
+	return { packets = #packets, hits = hit, learned = learned }
 end
 
 -- Called from tick: refresh at most one due subscription per run so a slow
@@ -3487,13 +3658,22 @@ function methods.tick()
 	local oui = oui_enrich(2)
 	local ff = refresh_due_feeds(now)
 	local arp = check_arp_changes(now)
+	local fp = nil
+	local fst = load_json_map(FINGERPRINT_FILE, function() return {} end)
+	-- a flow lasts long enough that one sample every five minutes is plenty
+	if now - (tonumber(fst.last) or 0) >= 300 then
+		fp = fingerprint_scan(load_apps(), now)
+		fst = load_json_map(FINGERPRINT_FILE, function() return {} end)
+		fst.last = now
+		save_json_map(FINGERPRINT_FILE, fst)
+	end
 	_qos_dirty = false
 	local apps = collect_app_stats(now)
 	if _qos_dirty then apply_qos() end
 	return { success = true, running = true,
 	         expired = e.expired, schedule_changed = sc.changed,
 	         active = sc.active, new_devices = nd, oui_lookups = oui,
-	         feed = ff, arp_events = arp, app_stats = apps }
+	         feed = ff, arp_events = arp, app_stats = apps, fingerprint = fp }
 end
 
 function methods.schedlist()
