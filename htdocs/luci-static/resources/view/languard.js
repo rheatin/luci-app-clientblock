@@ -5,147 +5,147 @@
 'require poll';
 
 var callList = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'list',
 	params: ['probe']
 });
 
 var callBlock = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'block',
 	params: ['mac', 'host', 'ip']
 });
 
 var callUnblock = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'unblock',
 	params: ['mac']
 });
 
 var callUnblockAll = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'unblock_all'
 });
 
 var callIpList = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'iplist',
 	params: ['limit', 'cat']
 });
 
-var callProxyList = rpc.declare({ object: 'luci.clientblock', method: 'proxylist' });
-var callProxyAdd = rpc.declare({ object: 'luci.clientblock', method: 'proxyadd', params: ['ip'] });
-var callProxyDel = rpc.declare({ object: 'luci.clientblock', method: 'proxydel', params: ['ip'] });
+var callProxyList = rpc.declare({ object: 'luci.languard', method: 'proxylist' });
+var callProxyAdd = rpc.declare({ object: 'luci.languard', method: 'proxyadd', params: ['ip'] });
+var callProxyDel = rpc.declare({ object: 'luci.languard', method: 'proxydel', params: ['ip'] });
 
 var callIpAdd = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'ipadd',
 	params: ['ip', 'note']
 });
 
 var callIpDel = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'ipdel',
 	params: ['ip']
 });
 
-var callDashboard = rpc.declare({ object: 'luci.clientblock', method: 'dashboard' });
-var callTrend = rpc.declare({ object: 'luci.clientblock', method: 'trend' });
-var callPanicState = rpc.declare({ object: 'luci.clientblock', method: 'panicstate' });
-var callPanic = rpc.declare({ object: 'luci.clientblock', method: 'panic', params: ['on_'] });
-var callKnownAdd = rpc.declare({ object: 'luci.clientblock', method: 'knownadd', params: ['mac'] });
-var callKnownList = rpc.declare({ object: 'luci.clientblock', method: 'knownlist' });
-var callWlList = rpc.declare({ object: 'luci.clientblock', method: 'wllist' });
-var callWlAdd = rpc.declare({ object: 'luci.clientblock', method: 'wladd', params: ['mac'] });
-var callWlDel = rpc.declare({ object: 'luci.clientblock', method: 'wldel', params: ['mac'] });
-var callFeedList = rpc.declare({ object: 'luci.clientblock', method: 'feedlist' });
-var callFeedAdd = rpc.declare({ object: 'luci.clientblock', method: 'feedadd', params: ['name', 'url'] });
-var callFeedDel = rpc.declare({ object: 'luci.clientblock', method: 'feeddel', params: ['id'] });
-var callFeedRefresh = rpc.declare({ object: 'luci.clientblock', method: 'feedrefresh', params: ['id'] });
-var callPortPresets = rpc.declare({ object: 'luci.clientblock', method: 'portpresets' });
-var callPortTemplate = rpc.declare({ object: 'luci.clientblock', method: 'porttemplate', params: ['macs', 'preset'] });
-var callExport = rpc.declare({ object: 'luci.clientblock', method: 'exportconfig' });
-var callImport = rpc.declare({ object: 'luci.clientblock', method: 'importconfig', params: ['payload'] });
+var callDashboard = rpc.declare({ object: 'luci.languard', method: 'dashboard' });
+var callTrend = rpc.declare({ object: 'luci.languard', method: 'trend' });
+var callPanicState = rpc.declare({ object: 'luci.languard', method: 'panicstate' });
+var callPanic = rpc.declare({ object: 'luci.languard', method: 'panic', params: ['on_'] });
+var callKnownAdd = rpc.declare({ object: 'luci.languard', method: 'knownadd', params: ['mac'] });
+var callKnownList = rpc.declare({ object: 'luci.languard', method: 'knownlist' });
+var callWlList = rpc.declare({ object: 'luci.languard', method: 'wllist' });
+var callWlAdd = rpc.declare({ object: 'luci.languard', method: 'wladd', params: ['mac'] });
+var callWlDel = rpc.declare({ object: 'luci.languard', method: 'wldel', params: ['mac'] });
+var callFeedList = rpc.declare({ object: 'luci.languard', method: 'feedlist' });
+var callFeedAdd = rpc.declare({ object: 'luci.languard', method: 'feedadd', params: ['name', 'url'] });
+var callFeedDel = rpc.declare({ object: 'luci.languard', method: 'feeddel', params: ['id'] });
+var callFeedRefresh = rpc.declare({ object: 'luci.languard', method: 'feedrefresh', params: ['id'] });
+var callPortPresets = rpc.declare({ object: 'luci.languard', method: 'portpresets' });
+var callPortTemplate = rpc.declare({ object: 'luci.languard', method: 'porttemplate', params: ['macs', 'preset'] });
+var callExport = rpc.declare({ object: 'luci.languard', method: 'exportconfig' });
+var callImport = rpc.declare({ object: 'luci.languard', method: 'importconfig', params: ['payload'] });
 
-var callGroupList = rpc.declare({ object: 'luci.clientblock', method: 'grouplist' });
-var callGroupAdd = rpc.declare({ object: 'luci.clientblock', method: 'groupadd', params: ['name', 'macs'] });
-var callGroupDel = rpc.declare({ object: 'luci.clientblock', method: 'groupdel', params: ['id'] });
-var callGroupSet = rpc.declare({ object: 'luci.clientblock', method: 'groupset', params: ['id', 'macs'] });
-var callCurfew = rpc.declare({ object: 'luci.clientblock', method: 'curfew', params: ['id', 'minutes'] });
-var callPortList = rpc.declare({ object: 'luci.clientblock', method: 'portlist' });
-var callPortAdd = rpc.declare({ object: 'luci.clientblock', method: 'portadd', params: ['mac', 'proto', 'port', 'note'] });
-var callPortDel = rpc.declare({ object: 'luci.clientblock', method: 'portdel', params: ['id'] });
+var callGroupList = rpc.declare({ object: 'luci.languard', method: 'grouplist' });
+var callGroupAdd = rpc.declare({ object: 'luci.languard', method: 'groupadd', params: ['name', 'macs'] });
+var callGroupDel = rpc.declare({ object: 'luci.languard', method: 'groupdel', params: ['id'] });
+var callGroupSet = rpc.declare({ object: 'luci.languard', method: 'groupset', params: ['id', 'macs'] });
+var callCurfew = rpc.declare({ object: 'luci.languard', method: 'curfew', params: ['id', 'minutes'] });
+var callPortList = rpc.declare({ object: 'luci.languard', method: 'portlist' });
+var callPortAdd = rpc.declare({ object: 'luci.languard', method: 'portadd', params: ['mac', 'proto', 'port', 'note'] });
+var callPortDel = rpc.declare({ object: 'luci.languard', method: 'portdel', params: ['id'] });
 
-var callNotifyGet = rpc.declare({ object: 'luci.clientblock', method: 'notifyget' });
-var callNotifyAdd = rpc.declare({ object: 'luci.clientblock', method: 'notifyadd',
+var callNotifyGet = rpc.declare({ object: 'luci.languard', method: 'notifyget' });
+var callNotifyAdd = rpc.declare({ object: 'luci.languard', method: 'notifyadd',
 	params: ['type_', 'name', 'url', 'token', 'chat'] });
-var callNotifyDel = rpc.declare({ object: 'luci.clientblock', method: 'notifydel', params: ['id'] });
-var callNotifyToggle = rpc.declare({ object: 'luci.clientblock', method: 'notifytoggle', params: ['id', 'enabled'] });
-var callNotifyEvents = rpc.declare({ object: 'luci.clientblock', method: 'notifyevents', params: ['events'] });
-var callNotifyTest = rpc.declare({ object: 'luci.clientblock', method: 'notifytest', params: ['id'] });
+var callNotifyDel = rpc.declare({ object: 'luci.languard', method: 'notifydel', params: ['id'] });
+var callNotifyToggle = rpc.declare({ object: 'luci.languard', method: 'notifytoggle', params: ['id', 'enabled'] });
+var callNotifyEvents = rpc.declare({ object: 'luci.languard', method: 'notifyevents', params: ['events'] });
+var callNotifyTest = rpc.declare({ object: 'luci.languard', method: 'notifytest', params: ['id'] });
 
 var callSchedList = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'schedlist'
 });
 
 var callSchedAdd = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'schedadd',
 	params: ['mac', 'days', 'start', 'stop', 'name']
 });
 
 var callSchedDel = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'scheddel',
 	params: ['id']
 });
 
 var callSchedToggle = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'schedtoggle',
 	params: ['id', 'enabled']
 });
 
 var callSelfCheck = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'selfcheck'
 });
 
 var callLogList = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'loglist',
 	params: ['limit']
 });
 
 var callLogClear = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'logclear'
 });
 
 var callAutoGet = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'autoget'
 });
 
 var callAutoSet = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'autoset',
 	params: ['enabled', 'threshold', 'window', 'ttl', 'ssh_password', 'ssh_user', 'web_auth']
 });
 
 var callScan = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'scan'
 });
 
 var callIpFlush = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'ipflush'
 });
 
 var callRename = rpc.declare({
-	object: 'luci.clientblock',
+	object: 'luci.languard',
 	method: 'rename',
 	params: ['mac', 'name']
 });
@@ -2357,7 +2357,7 @@ return view.extend({
 
 		var root = E('div', { 'class': 'cb-wrap' }, [
 			E('style', {}, STYLE),
-			E('h2', {}, _('Client Access Control')),
+			E('h2', {}, _('LAN Guard')),
 			E('div', { 'class': 'cb-tabs' }, [
 				tabBtn('overview', _('Overview')),
 				tabBtn('devices', _('Devices')),

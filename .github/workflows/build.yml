@@ -98,9 +98,9 @@ jobs:
 
       - name: Prepare package feed
         run: |
-          mkdir -p sdk/package/clientblock
-          cp -r Makefile root htdocs po postinst prerm postrm sdk/package/clientblock/
-          [ -f LICENSE ] && cp LICENSE sdk/package/clientblock/ || true
+          mkdir -p sdk/package/languard
+          cp -r Makefile root htdocs po postinst prerm postrm sdk/package/languard/
+          [ -f LICENSE ] && cp LICENSE sdk/package/languard/ || true
 
       - name: Configure (apk output)
         run: |
@@ -117,7 +117,7 @@ jobs:
       - name: Build package
         run: |
           cd sdk
-          make package/clientblock/compile V=s -j$(nproc) 2>&1 | tail -60
+          make package/languard/compile V=s -j$(nproc) 2>&1 | tail -60
 
       - name: Collect artifacts
         run: |
@@ -125,13 +125,13 @@ jobs:
           # only our package, and only the .apk form. The filename carries no
           # arch (PKGARCH=all), so tag it or the two matrix jobs collide.
           # the app itself plus its translation package
-          for f in $(find sdk/bin -type f \( -name 'luci-app-clientblock*.apk' -o -name 'luci-i18n-clientblock*.apk' \)); do
+          for f in $(find sdk/bin -type f \( -name 'luci-app-languard*.apk' -o -name 'luci-i18n-languard*.apk' \)); do
             base=$(basename "$f" .apk)
             cp "$f" "out/${base}_${{ matrix.arch }}.apk"
           done
           if [ -z "$(ls -A out 2>/dev/null)" ]; then
             echo "ERROR: no .apk produced -- USE_APK may not be active in this SDK" >&2
-            find sdk/bin -type f -name 'luci-app-clientblock*' -exec ls -lh {} \;
+            find sdk/bin -type f -name 'luci-app-languard*' -exec ls -lh {} \;
             exit 1
           fi
           ls -lh out/
@@ -139,7 +139,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-clientblock-${{ matrix.arch }}
+          name: luci-app-languard-${{ matrix.arch }}
           path: out/*
           if-no-files-found: error
 
@@ -166,7 +166,7 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## luci-app-clientblock ${{ github.ref_name }}
+            ## luci-app-languard ${{ github.ref_name }}
 
             Client access control for OpenWrt: device and external-IP blocking,
             realtime login-attack protection, offline IP region lookup.
@@ -176,12 +176,12 @@ jobs:
             Download the `.apk` matching your architecture and run:
 
             ```sh
-            apk add --allow-untrusted luci-app-clientblock_*.apk
+            apk add --allow-untrusted luci-app-languard_*.apk
             ```
 
             Or use the shell installer (works on any OpenWrt):
 
             ```sh
-            tar -xzf luci-app-clientblock-*.tar.gz
-            cd luci-app-clientblock && sh install.sh
+            tar -xzf luci-app-languard-*.tar.gz
+            cd luci-app-languard && sh install.sh
             ```

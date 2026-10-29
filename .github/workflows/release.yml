@@ -23,11 +23,11 @@ jobs:
         run: |
           set -e
           PKG="${{ steps.v.outputs.pkg }}"
-          STAGE="luci-app-clientblock-${PKG}"
+          STAGE="luci-app-languard-${PKG}"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
           cp -r root "$STAGE"/
           mkdir -p "$STAGE/root/www/luci-static/resources/view"
-          cp htdocs/luci-static/resources/view/clientblock.js \
+          cp htdocs/luci-static/resources/view/languard.js \
              "$STAGE/root/www/luci-static/resources/view/"
           cp install.sh uninstall.sh README.md LICENSE "$STAGE"/
           tar -czf "${STAGE}.tar.gz" "$STAGE"
@@ -39,13 +39,13 @@ jobs:
         with:
           name: shell-installer
           path: |
-            luci-app-clientblock-*.tar.gz
-            luci-app-clientblock-*.tar.gz.sha256
+            luci-app-languard-*.tar.gz
+            luci-app-languard-*.tar.gz.sha256
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            luci-app-clientblock-*.tar.gz
-            luci-app-clientblock-*.tar.gz.sha256
+            luci-app-languard-*.tar.gz
+            luci-app-languard-*.tar.gz.sha256

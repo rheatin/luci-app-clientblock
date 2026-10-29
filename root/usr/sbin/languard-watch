@@ -2,9 +2,9 @@
 # Login-attack watcher: streams the syslog and blocks repeat offenders as they
 # appear, instead of polling once a minute. Replaces cron-based scanning.
 
-CONFIG=/etc/clientblock/auto.json
-LOG_TAG=clientblock-watch
-LOCK=/var/run/clientblock-watch.lock
+CONFIG=/etc/languard/auto.json
+LOG_TAG=languard-watch
+LOCK=/var/run/languard-watch.lock
 
 enabled() {
 	[ -f "$CONFIG" ] || return 0
@@ -33,7 +33,7 @@ threshold() {
 log_event() {
 	local now
 	now=$(date +%s)
-	ubus -S call luci.clientblock logevent \
+	ubus -S call luci.languard logevent \
 		"{\"epoch\":\"$now\",\"kind\":\"$1\",\"result\":\"$2\",\"ip\":\"$3\",\"user\":\"$4\",\"detail\":\"$5\"}" \
 		>/dev/null 2>&1
 }
@@ -47,7 +47,7 @@ count_ip() {
 	# $1 = ip, $2 = threshold, $3 = failure kind
 	local ip=$1 th=$2 kind=${3:-unknown} now cnt
 	now=$(date +%s)
-	local buf=/tmp/clientblock-hits
+	local buf=/tmp/languard-hits
 	touch "$buf"
 
 	# drop entries older than the counting window (default 600s)
@@ -65,7 +65,7 @@ count_ip() {
 		# keep the offending log line as evidence, with quotes stripped so it
 		# stays valid inside the JSON payload
 		ev=$(printf '%s' "$line" | tr -d '"\\' | cut -c1-200)
-		if ubus call luci.clientblock ipadd \
+		if ubus call luci.languard ipadd \
 			"{\"ip\":\"$ip\",\"note\":\"auto: $cnt $kind failures\",\"source\":\"auto\",\"fast\":\"1\",\"evidence\":\"$ev\"}" \
 			>/dev/null 2>&1; then
 			logger -t "$LOG_TAG" "blocked $ip after $cnt $kind failures"
@@ -78,7 +78,7 @@ count_ip() {
 main() {
 	# Single instance. procd keeps fd 9 across respawn, so flock alone reports a
 	# phantom holder; a pidfile with a liveness check is reliable here.
-	PIDFILE=/var/run/clientblock-watch.pid
+	PIDFILE=/var/run/languard-watch.pid
 
 	# A live instance wins: never kill a working watcher just because we started.
 	if [ -f "$PIDFILE" ]; then
@@ -95,7 +95,7 @@ main() {
 	for _p in $(ps w 2>/dev/null | grep "[c]lientblock-watch" | awk '{print $1}'); do
 		[ "$_p" = "$$" ] && continue
 		[ "$_p" = "$MYPPID" ] && continue
-		grep -q "clientblock-watch" "/proc/$_p/cmdline" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+		grep -q "languard-watch" "/proc/$_p/cmdline" 2>/dev/null && kill -9 "$_p" 2>/dev/null
 	done
 
 	echo $$ > "$PIDFILE"
@@ -120,7 +120,7 @@ main() {
 	# A plain `logread -f | while` runs the loop in a subshell, so a TERM to the
 	# script leaves it orphaned and still recording. Read from a FIFO instead:
 	# the loop stays in the main shell and logread is a child we can kill.
-	PIPE=/tmp/clientblock-log.fifo
+	PIPE=/tmp/languard-log.fifo
 	rm -f "$PIPE"
 	mkfifo "$PIPE" 2>/dev/null || { logger -t "$LOG_TAG" "cannot create fifo"; exit 1; }
 	logread -f > "$PIPE" 2>/dev/null &
@@ -130,7 +130,7 @@ main() {
 	# block the log reader; the trap below takes it down with us.
 	(
 		while :; do
-			ubus -S call luci.clientblock tick >/dev/null 2>&1
+			ubus -S call luci.languard tick >/dev/null 2>&1
 			sleep 55
 		done
 	) &

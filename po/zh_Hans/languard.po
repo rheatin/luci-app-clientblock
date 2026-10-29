@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: luci-app-clientblock\n"
+"Project-Id-Version: luci-app-languard\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Language: zh_Hans\n"
@@ -753,3 +753,5 @@ msgstr "策略"
 msgid "Settings"
 msgstr "设置"
 
+msgid "LAN Guard"
+msgstr "局域网守卫"
