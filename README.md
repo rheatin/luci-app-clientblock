@@ -308,6 +308,23 @@ ubus call luci.languard logclear
 超过会在列表里标「已截断至 20000 / 144575」。上限来自实测：14 万条会把状态文件撑到
 12MB，`tick` 从 11ms 涨到 5.4 秒。
 
+## 域名拦截（DNS 层）
+
+IP 规则管不到域名列表，而多数公共黑名单其实是域名。域名由 dnsmasq 应答为
+`0.0.0.0` 与 `::`，生成在 `/etc/languard/domainblock.hosts`，通过 UCI 的
+`addnhosts` 挂给 dnsmasq。
+
+- 订阅里的主机名自动进这张表，和 IP 分开存
+- 删除订阅时它贡献的域名一并移除
+- 上限 20000 条
+
+**不影响局域网**：只有在**首次**挂上 `addnhosts` 时需要重启一次 dnsmasq
+（配置文件的解析靠启动）。此后增删域名只重写 hosts 文件并 `SIGHUP`，
+dnsmasq 重读 hosts、清缓存，DHCP 租约和已建立的连接都不受影响。
+
+一个容易踩的坑：rpcd 的 umask 会让文件变成 `600`，dnsmasq 以非特权用户运行，
+读不到就会静默失效。生成后固定 `chmod 644`。
+
 ## ARP / MAC 异常告警
 
 `tick` 每次比对当前邻居表与上次记录，发现同一个 IP 换了 MAC 就告警：

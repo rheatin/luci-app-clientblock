@@ -33,6 +33,11 @@ var callIpList = rpc.declare({
 	params: ['limit', 'cat']
 });
 
+var callDomainList = rpc.declare({ object: 'luci.languard', method: 'domainlist' });
+var callDomainAdd = rpc.declare({ object: 'luci.languard', method: 'domainadd', params: ['name'] });
+var callDomainDel = rpc.declare({ object: 'luci.languard', method: 'domaindel', params: ['name'] });
+var callDomainToggle = rpc.declare({ object: 'luci.languard', method: 'domaintoggle', params: ['on_'] });
+
 var callProxyList = rpc.declare({ object: 'luci.languard', method: 'proxylist' });
 var callProxyAdd = rpc.declare({ object: 'luci.languard', method: 'proxyadd', params: ['ip'] });
 var callProxyDel = rpc.declare({ object: 'luci.languard', method: 'proxydel', params: ['ip'] });
@@ -966,6 +971,74 @@ return view.extend({
 						'click': function (ev) { self.handleFeedDel(f, ev); } }, _('Delete'))
 				])
 			]));
+		});
+	},
+
+	refreshDomains: function () {
+		var self = this;
+		return callDomainList().then(function (res) {
+			self.domains = (res && res.domains) || [];
+			self.domainCount = (res && res.count) || 0;
+			self.domainsEnabled = !!(res && res.enabled);
+			self.renderDomains();
+		}).catch(function () {});
+	},
+
+	renderDomains: function () {
+		var box = document.getElementById('cb-domain-list');
+		if (!box) return;
+		var self = this;
+		while (box.firstChild) box.removeChild(box.firstChild);
+
+		var en = document.getElementById('cb-domain-enabled');
+		if (en) en.checked = this.domainsEnabled !== false;
+
+		var cnt = document.getElementById('cb-domain-count');
+		if (cnt) cnt.textContent = (this.domainCount || 0) + ' ' + _('domains');
+
+		var list = this.domains || [];
+		if (!list.length) {
+			box.appendChild(E('span', { 'class': 'cb-note' }, _('None configured')));
+			return;
+		}
+		list.slice(0, 200).forEach(function (d) {
+			box.appendChild(E('span', { 'class': 'cb-proxychip' }, [
+				E('span', { 'class': 'cb-mono' }, d.domain),
+				E('button', {
+					'class': 'cb-proxyx', 'title': _('Remove'),
+					'click': function () {
+						return callDomainDel(d.domain).then(function () { return self.refreshDomains(); });
+					}
+				}, '\u00d7')
+			]));
+		});
+		if (list.length > 200)
+			box.appendChild(E('span', { 'class': 'cb-note' }, '+ ' + (this.domainCount - 200)));
+	},
+
+	handleDomainAdd: function (ev) {
+		var self = this;
+		var el = document.getElementById('cb-domain-input');
+		if (!el) return;
+		var name = (el.value || '').trim();
+		if (!name) { el.focus(); return; }
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callDomainAdd(name).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			el.value = '';
+			return self.refreshDomains();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	handleDomainToggle: function (on) {
+		var self = this;
+		return callDomainToggle(on ? '1' : '0').then(function () {
+			return self.refreshDomains();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
 		});
 	},
 
@@ -1956,7 +2029,7 @@ return view.extend({
 			if (btn) btn.classList.toggle('active', t === name);
 		});
 		if (name === 'overview') return this.refreshDash();
-		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds() ]);
+		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds(), this.refreshDomains() ]);
 		if (name === 'logs') return this.refreshLogs();
 		if (name === 'policy') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'settings') {
@@ -2310,6 +2383,29 @@ return view.extend({
 					E('th', { 'style': 'text-align:right' }, _('Action'))
 				])),
 				E('tbody', { 'id': 'cb-ip-tbody' })
+			]),
+			E('div', { 'class': 'cb-card', 'style': 'margin-top:1rem' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Domain blocking')),
+					E('span', { 'class': 'cb-count', 'id': 'cb-domain-count', 'style': 'margin-left:auto' }, '')
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('p', { 'class': 'cb-note' },
+						_('Domains are answered with 0.0.0.0 and :: by dnsmasq, so the whole LAN is covered without touching the firewall. Feed entries that are hostnames land here instead of the address list.')),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
+						E('input', { 'type': 'text', 'id': 'cb-domain-input', 'class': 'cb-input',
+							'placeholder': 'ads.example.com', 'style': 'max-width:16rem' }),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleDomainAdd(ev); } }, _('Block domain')),
+						E('label', { 'class': 'cb-chip', 'style': 'margin:0' }, [
+							E('input', { 'type': 'checkbox', 'id': 'cb-domain-enabled',
+								'change': function (ev) { self.handleDomainToggle(ev.target.checked); } }),
+							E('span', {}, _('enabled'))
+						])
+					]),
+					E('div', { 'class': 'cb-proxylist', 'id': 'cb-domain-list' }, [])
+				])
 			])
 		]);
 

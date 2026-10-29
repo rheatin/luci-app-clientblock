@@ -791,3 +791,18 @@ msgstr "网关"
 
 msgid "conflict"
 msgstr "地址冲突"
+
+msgid "Domain blocking"
+msgstr "域名拦截"
+
+msgid "Block domain"
+msgstr "封禁域名"
+
+msgid "domains"
+msgstr "个域名"
+
+msgid "enabled"
+msgstr "已启用"
+
+msgid "Domains are answered with 0.0.0.0 and :: by dnsmasq, so the whole LAN is covered without touching the firewall. Feed entries that are hostnames land here instead of the address list."
+msgstr "域名由 dnsmasq 应答为 0.0.0.0 与 ::，整个局域网立即生效，不需要动防火墙。订阅里的主机名会进到这里而不是地址列表。"
