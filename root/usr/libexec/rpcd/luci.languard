@@ -1090,7 +1090,7 @@ local function check_arp_changes(now)
 		if old and old ~= mac then
 			-- phones rotate their private Wi-Fi address by design; alerting on
 			-- those would train the user to ignore the warning
-			local noisy = is_local_mac(old) or is_local_mac(mac)
+			local noisy = is_local_mac(old) and is_local_mac(mac)
 			local is_gw = (ip == gw)
 			if is_gw or not noisy then
 				local key = ip .. "|" .. mac
@@ -1461,6 +1461,30 @@ local function collect_devices()
 	end
 	for mac, st in pairs(state) do
 		add(mac, st.ip, st.host, neigh[mac] ~= nil)
+	end
+
+	-- an address answered by a different MAC than the one bound to it is
+	-- either a stale binding or a virtual interface that took the address
+	local by_ip = {}
+	for _, e in ipairs(list) do
+		if e.ip then
+			by_ip[e.ip] = by_ip[e.ip] or {}
+			table.insert(by_ip[e.ip], e)
+		end
+	end
+	for _, es in pairs(by_ip) do
+		if #es > 1 then
+			local live
+			for _, e in ipairs(es) do if e.online then live = e end end
+			if live then
+				for _, e in ipairs(es) do
+					if e ~= live then
+						e.conflict = live.mac
+						live.conflict = live.conflict or e.mac
+					end
+				end
+			end
+		end
 	end
 
 	table.sort(list, function(a, b)

@@ -815,3 +815,9 @@ msgstr "同步到内核"
 
 msgid "Kernel set rebuilt from saved state"
 msgstr "已按保存的状态重建内核集合"
+
+msgid "IP conflict"
+msgstr "IP 冲突"
+
+msgid "this address is also claimed by"
+msgstr "该地址同时被以下 MAC 占用"

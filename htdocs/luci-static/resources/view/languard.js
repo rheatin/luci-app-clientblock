@@ -2087,6 +2087,12 @@ return view.extend({
 			var newBadge = d.is_new
 				? E('span', { 'class': 'cb-res cb-sched-on', 'style': 'margin-left:.35rem' }, _('new'))
 				: '';
+			var conflictBadge = d.conflict
+				? E('span', {
+					'class': 'cb-src cb-src-panic', 'style': 'margin-left:.35rem',
+					'title': _('this address is also claimed by') + ' ' + d.conflict
+				}, _('IP conflict'))
+				: '';
 
 			var stateBadge = d.blocked
 				? E('span', { 'class': 'cb-badge cb-badge-blocked' }, _('Blocked'))
@@ -2134,7 +2140,7 @@ return view.extend({
 				: (d.host || E('span', { 'class': 'cb-mono' }, _('(unnamed)')));
 
 			tbody.appendChild(E('tr', { 'class': d.blocked ? 'cb-blocked' : (d.online ? '' : 'cb-offline') }, [
-				E('td', {}, [ stateBadge, newBadge ]),
+				E('td', {}, [ stateBadge, newBadge, conflictBadge ]),
 				E('td', {}, [
 					nameCell,
 					(d.vendor || d.device_type)
