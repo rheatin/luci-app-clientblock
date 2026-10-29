@@ -2611,6 +2611,15 @@ function methods.selfcheck()
 		alive and ("running (pid " .. pid .. ")") or "not running",
 		alive and "" or "/etc/init.d/clientblock restart")
 
+	-- 1b) LuCI log patch: without it every proxied login is recorded as the
+	--     proxy. A LuCI upgrade replaces the file, so this check matters.
+	local disp = read_all("/usr/share/ucode/luci/dispatcher.uc") or ""
+	local patched = disp:find("clientblock: real client address", 1, true) ~= nil
+	local has_proxy = next(load_json_map(PROXY_FILE, function() return {} end)) ~= nil
+	add("luci_realip", patched or not has_proxy,
+		patched and "patched" or (has_proxy and "not applied" or "no trusted proxy"),
+		patched and "" or "lua /usr/libexec/clientblock-luci-realip && /etc/init.d/uhttpd restart")
+
 	-- 2) the logread child that actually feeds it. A bare `logread -f` may be
 	--    an orphan from an earlier run, so require it to belong to our watcher.
 	local logreads = 0

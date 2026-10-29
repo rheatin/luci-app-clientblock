@@ -304,6 +304,35 @@ X-Real-IP:       203.0.113.7            ← 干净的单 IP，优先用它
 
 代理地址默认填路由器自身（`192.168.1.5`），lucky 跑在路由器上时就是它。
 
+### 让 LuCI 日志显示真实 IP
+
+uhttpd 把 **socket 对端**当作客户端地址，而且只向处理程序导出固定的一组请求头
+（`ACCEPT` / `AUTHORIZATION` / `COOKIE` / `HOST` / `REFERER` / `USER_AGENT` 等），
+**没有** `X-Forwarded-For` 或 `X-Real-IP`。所以反代之后的 LuCI 只能看到代理自己。
+
+本包安装时会执行 `clientblock-luci-realip`，只修改 `dispatcher.uc` 里**两行登录日志**，
+把来源地址换成代理转发的地址；认证、路由、界面都不动。原文件备份在同目录
+`dispatcher.uc.clientblock-orig`。
+
+由于 uhttpd 拿不到转发头，代理需要把客户端地址写进它**确实会导出**的
+`X-HTTP-Method-Override`（LuCI 不用这个头）：
+
+```
+lucky → Web服务 → openwrt 规则 → 高级设置
+  追加客户端协议头到指定Header  = 开
+  自定义Header Key             = X-HTTP-Method-Override
+```
+
+**防伪造**：lucky 只在该头不存在时写入，客户端可以自带。所以 LuCI 侧只有在
+`/proc/net/nf_conntrack` 里确实存在该地址的连接时才采信，否则退回代理地址。
+
+**LuCI 升级会覆盖 `dispatcher.uc`**。升级后「设置 → 健康检查」会显示
+`luci_realip: not applied`，执行一次即可恢复：
+
+```sh
+lua /usr/libexec/clientblock-luci-realip && /etc/init.d/uhttpd restart
+```
+
 ## 封禁分类
 
 地址表上方是一排分类筛选，点一下只看该类：
