@@ -902,3 +902,36 @@ msgstr "显示全部"
 
 msgid "part of this was matched by port only, without checking the packet"
 msgstr "其中一部分仅按端口匹配，未校验数据包内容"
+
+msgid "Rate rules"
+msgstr "限速规则"
+
+msgid "All devices"
+msgstr "全部设备"
+
+msgid "All apps"
+msgstr "全部应用"
+
+msgid "No rate rules yet"
+msgstr "还没有限速规则"
+
+msgid "Pick a device, an app, or both"
+msgstr "请选择设备或应用（至少一项）"
+
+msgid "lowest (cs1)"
+msgstr "最低 (cs1)"
+
+msgid "low (af11)"
+msgstr "低 (af11)"
+
+msgid "normal (cs0)"
+msgstr "普通 (cs0)"
+
+msgid "high (cs4)"
+msgstr "高 (cs4)"
+
+msgid "highest (ef)"
+msgstr "最高 (ef)"
+
+msgid "Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Leave the device empty to cover every device."
+msgstr "给匹配的流量打 DSCP 标记，qosmate 会把它映射成 hfsc 队列。设备留空表示对所有设备生效。"

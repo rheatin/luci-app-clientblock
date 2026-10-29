@@ -39,6 +39,9 @@ var callAppStats = rpc.declare({ object: 'luci.languard', method: 'appstats' });
 var callAppImport = rpc.declare({ object: 'luci.languard', method: 'appimport', params: ['text'] });
 var callAppDel = rpc.declare({ object: 'luci.languard', method: 'appdel', params: ['id'] });
 var callAppReset = rpc.declare({ object: 'luci.languard', method: 'appreset' });
+var callQosList = rpc.declare({ object: 'luci.languard', method: 'qoslist' });
+var callQosAdd = rpc.declare({ object: 'luci.languard', method: 'qosadd', params: ['ip', 'app', 'dscp'] });
+var callQosDel = rpc.declare({ object: 'luci.languard', method: 'qosdel', params: ['id'] });
 var callDevMerge = rpc.declare({ object: 'luci.languard', method: 'devmerge', params: ['mac', 'into'] });
 var callDevUnmerge = rpc.declare({ object: 'luci.languard', method: 'devunmerge', params: ['mac'] });
 var callDomainList = rpc.declare({ object: 'luci.languard', method: 'domainlist' });
@@ -1187,6 +1190,79 @@ return view.extend({
 		});
 	},
 
+	refreshQos: function () {
+		var self = this;
+		return callQosList().then(function (res) {
+			self.qos = (res && res.rules) || [];
+			self.renderQos();
+		}).catch(function () {});
+	},
+
+	renderQos: function () {
+		var self = this;
+		var tbody = document.getElementById('cb-qos-tbody');
+		if (!tbody) return;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		// device picker
+		var dev = document.getElementById('cb-qos-dev');
+		if (dev && !dev.dataset.filled) {
+			dev.appendChild(E('option', { 'value': '' }, _('All devices')));
+			(this.devices || []).forEach(function (d) {
+				if (!d.ip) return;
+				dev.appendChild(E('option', { 'value': d.ip },
+					(d.host || d.mac) + ' · ' + d.ip));
+			});
+			dev.dataset.filled = '1';
+		}
+		var appSel = document.getElementById('cb-qos-app');
+		if (appSel && !appSel.dataset.filled) {
+			appSel.appendChild(E('option', { 'value': '' }, _('All apps')));
+			(this.apps || []).forEach(function (a) {
+				appSel.appendChild(E('option', { 'value': a.name }, a.name));
+			});
+			appSel.dataset.filled = '1';
+		}
+
+		var list = this.qos || [];
+		if (!list.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
+				_('No rate rules yet'))));
+			return;
+		}
+		list.forEach(function (r) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', {}, r.ip || _('All devices')),
+				E('td', { 'class': 'cb-u' }, r.app || _('All apps')),
+				E('td', { 'class': 'cb-mono' }, r.dscp),
+				E('td', { 'class': 'cb-hide-sm cb-t' }, String(r.ips || 0)),
+				E('td', { 'style': 'text-align:right' },
+					E('button', { 'class': 'cb-btn cb-btn-danger',
+						'click': function () {
+							callQosDel(r.id).then(function () { return self.refreshQos(); });
+						} }, _('Delete')))
+			]));
+		});
+	},
+
+	handleQosAdd: function (ev) {
+		var self = this;
+		var ip = (document.getElementById('cb-qos-dev') || {}).value || '';
+		var app = (document.getElementById('cb-qos-app') || {}).value || '';
+		var dscp = (document.getElementById('cb-qos-dscp') || {}).value || 'cs1';
+		if (!ip && !app) {
+			ui.addNotification(null, E('p', {}, _('Pick a device, an app, or both')), 'warning');
+			return;
+		}
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callQosAdd(ip, app, dscp).then(function () {
+			return self.refreshQos();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
 	handleAppImport: function (ev) {
 		var self = this;
 		var ta = document.getElementById('cb-app-import');
@@ -2230,7 +2306,14 @@ return view.extend({
 		});
 		if (name === 'overview') return this.refreshDash();
 		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds(), this.refreshDomains() ]);
-		if (name === 'apps') return Promise.all([ this.refreshApps(), this.refreshAppStats() ]);
+		if (name === 'apps') {
+			var selfA = this;
+			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0') ])
+				.then(function (r) {
+					selfA.devices = (r[2] && r[2].devices) || selfA.devices || [];
+					return selfA.refreshQos();
+				});
+		}
 		if (name === 'logs') return this.refreshLogs();
 		if (name === 'policy') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'settings') {
@@ -2697,6 +2780,40 @@ return view.extend({
 						E('button', { 'class': 'cb-btn cb-btn-primary',
 							'click': function (ev) { self.handleAppImport(ev); } }, _('Import')),
 						E('span', { 'class': 'cb-count', 'id': 'cb-app-count' }, '')
+					])
+				])
+			]),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Rate rules'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('p', { 'class': 'cb-note' },
+						_('Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Leave the device empty to cover every device.')),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
+						E('select', { 'id': 'cb-qos-dev', 'class': 'cb-sel' }, []),
+						E('select', { 'id': 'cb-qos-app', 'class': 'cb-sel' }, []),
+						E('select', { 'id': 'cb-qos-dscp', 'class': 'cb-sel' }, [
+							E('option', { 'value': 'cs1' }, _('lowest (cs1)')),
+							E('option', { 'value': 'af11' }, _('low (af11)')),
+							E('option', { 'value': 'cs0' }, _('normal (cs0)')),
+							E('option', { 'value': 'cs4' }, _('high (cs4)')),
+							E('option', { 'value': 'ef' }, _('highest (ef)'))
+						]),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleQosAdd(ev); } }, _('Add rule'))
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Device')),
+								E('th', {}, _('App')),
+								E('th', {}, _('Class')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Addresses')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-qos-tbody' })
+						])
 					])
 				])
 			])

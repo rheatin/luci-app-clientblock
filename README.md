@@ -335,6 +335,33 @@ ubus call luci.languard logclear
 实测过 884MB 的错误归属。即便如此，端口匹配仍会误判（Aqara 空调曾被认成哈利波特），
 所以低置信度的流量单独标记出来。
 
+### 按应用限速
+
+qosmate 的分流链路是：
+
+```
+prerouting(priority mangle, -150) → DSCP → meta priority = classid → hfsc 队列
+```
+
+所以只要在**更早的优先级**（-160）把 DSCP 打好，qosmate 自动把流量送进对应队列，
+不需要我们碰 tc。
+
+规则形式：**设备 + 应用 + 优先级**，设备留空表示所有设备。优先级对应关系：
+
+| 级别 | DSCP | qosmate 队列 |
+|---|---|---|
+| 最高 | ef / cs5 | 1:11 |
+| 高 | cs4 / af41 | 1:12 |
+| 普通 | cs0 | 1:13 |
+| 低 | af11 / cs2 | 1:14 |
+| 最低 | cs1 | 1:15 |
+
+**应用 → 目的地址是学出来的**：Clash 对 fake-IP 连接不提供目的 IP，
+但它的 `sourcePort` 和 conntrack 里的源端口能对上，从而反推出客户端实际连接的
+`198.18.x.x`，再写进 nft set。每条规则会缓存最多 64 个地址。
+
+只有**高置信度**（域名 / 地址段匹配）的流量会参与学习，端口匹配的不算。
+
 数据来源：Clash 的 secret 从 `uci get openclash.config.dashboard_password` 读取，
 读不到则回退到 `/etc/openclash/config/default.yaml`。
 
