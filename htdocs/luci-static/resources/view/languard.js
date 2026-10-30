@@ -1143,6 +1143,10 @@ return view.extend({
 			}, [
 				E('td', { 'class': 'cb-u' }, [
 					a.name,
+					(meta && meta.generic)
+						? E('span', { 'class': 'cb-src cb-src-manual', 'style': 'margin-left:.35rem',
+							'title': _('a broad vendor category, not a single app') }, _('broad'))
+						: '',
 					a.low > 0
 						? E('span', { 'class': 'cb-src cb-src-panic', 'style': 'margin-left:.35rem',
 							'title': _('part of this was matched by port only, without checking the packet') },

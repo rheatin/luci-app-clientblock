@@ -1073,3 +1073,9 @@ msgstr "Geosite 合集"
 
 msgid "a v2ray .dat file holding every category at once; routing categories are skipped"
 msgstr "一个 v2ray .dat 文件，包含全部分类；路由类分类会被跳过"
+
+msgid "broad"
+msgstr "泛分类"
+
+msgid "a broad vendor category, not a single app"
+msgstr "厂商大类，不是单一应用"

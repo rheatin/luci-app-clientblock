@@ -886,15 +886,19 @@ local function merge_geosite(fd, cats)
 			for _, dom in ipairs(domains) do
 				sigs[#sigs + 1] = { proto = "tcp", dport = "", host = dom, dict = "" }
 			end
+			-- an all-uppercase name or a very large set is a vendor umbrella,
+			-- not an app: it still matches, but is labelled as coarse
+			local generic = (code == code:upper() and #domains > 50) or #domains > 300
 			local ex = by_name[code]
 			if ex then
 				ex.sigs = sigs
 				ex.feed = tostring(fd.id)
+				ex.generic = generic
 				updated = updated + 1
 			else
 				d.seq = d.seq + 1
 				d.apps[#d.apps + 1] = { id = d.seq, name = code, class = fd.cls or "other",
-				                        sigs = sigs, feed = tostring(fd.id) }
+				                        sigs = sigs, feed = tostring(fd.id), generic = generic }
 				made = made + 1
 			end
 		end
@@ -1471,7 +1475,15 @@ local IDX = {}
 
 function IDX.build(apps)
 	local idx = { suffix = {}, substr = {}, port = {} }
-	for _, a in ipairs(apps.apps) do
+	-- A category like APPLE or LE holds thousands of domains and would
+	-- otherwise claim everything a specific app also claims. Sorting by
+	-- domain count means the narrowest app owns a suffix.
+	local order = {}
+	for i, a in ipairs(apps.apps) do order[i] = a end
+	table.sort(order, function(x, y)
+		return #(x.sigs or {}) < #(y.sigs or {})
+	end)
+	for _, a in ipairs(order) do
 		for _, sig in ipairs(a.sigs or {}) do
 			local h = sig.host and sig.host:lower() or ""
 			if h ~= "" then
@@ -1710,6 +1722,7 @@ function methods.applist()
 	local out = {}
 	for _, a in ipairs(d.apps) do
 		out[#out + 1] = { id = a.id, name = a.name, class = a.class,
+		                  generic = a.generic or false,
 		                  sigs = #(a.sigs or {}),
 		                  bytes = (st.apps or {})[a.name] or 0 }
 	end
