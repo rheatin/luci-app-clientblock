@@ -923,6 +923,32 @@ return view.extend({
 		}).catch(function () { self.renderFeeds(); });
 	},
 
+	// The browser sends the file straight to a small CGI, which writes it to
+	// /tmp; the feed then points at that path with file://, so nothing has to
+	// be served over the network or typed by hand.
+	handleFeedUpload: function (ev) {
+		var self = this;
+		var input = document.getElementById('cb-feed-file');
+		var f = input && input.files && input.files[0];
+		if (!f) { ui.addNotification(null, E('p', {}, _('Pick a file first')), 'warning'); return; }
+		var kind = (document.getElementById('cb-feed-kind') || {}).value || 'ip';
+		var name = (document.getElementById('cb-feed-name') || {}).value || f.name;
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return fetch('/cgi-bin/lg-upload?name=' + encodeURIComponent(f.name), {
+			method: 'POST', body: f, credentials: 'same-origin'
+		}).then(function (r) { return r.json(); }).then(function (res) {
+			if (!res || !res.path) throw new Error(_('Upload failed'));
+			return callFeedAdd(name, 'file://' + res.path, '', kind, '');
+		}).then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			input.value = '';
+			return self.refreshFeeds();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
 	handleFeedAdd: function (ev) {
 		var self = this;
 		var n = (document.getElementById('cb-feed-name') || {}).value || '';
@@ -3004,7 +3030,10 @@ E('div', { 'class': 'cb-card' }, [
 							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',
 								'style': 'width:18rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
 						E('button', { 'class': 'cb-btn',
-							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed'))
+							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed')),
+						E('input', { 'type': 'file', 'id': 'cb-feed-file', 'style': 'max-width:14rem' }),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleFeedUpload(ev); } }, _('Upload file'))
 					]),
 					E('div', { 'class': 'cb-tablewrap' }, [
 						E('table', { 'class': 'cb-table' }, [

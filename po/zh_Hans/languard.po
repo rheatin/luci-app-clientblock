@@ -1079,3 +1079,12 @@ msgstr "泛分类"
 
 msgid "a broad vendor category, not a single app"
 msgstr "厂商大类，不是单一应用"
+
+msgid "Upload file"
+msgstr "上传文件"
+
+msgid "Pick a file first"
+msgstr "先选一个文件"
+
+msgid "Upload failed"
+msgstr "上传失败"
