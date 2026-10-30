@@ -695,11 +695,20 @@ end
 function methods.feeddel(id)
 	local f = load_feeds()
 	local keep, removed = {}, false
+	local gone
 	for _, fd in ipairs(f.feeds) do
-		if tostring(fd.id) == tostring(id) then removed = true else keep[#keep + 1] = fd end
+		if tostring(fd.id) == tostring(id) then removed = true; gone = fd
+		else keep[#keep + 1] = fd end
 	end
 	if not removed then return err("no such feed") end
 	f.feeds = keep
+	-- an uploaded feed owns its file; removing the feed must not leave it behind
+	if gone and gone.url then
+		local path = gone.url:match("^file://(.+)$")
+		if path and path:find("/uploads/", 1, true) and not path:find("..", 1, true) then
+			fs.unlink(path)
+		end
+	end
 	save_json_map(FEEDS_FILE, f)
 	-- drop everything this feed contributed, addresses and domains alike
 	local ips = load_ipstate()
