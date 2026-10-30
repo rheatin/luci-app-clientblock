@@ -506,13 +506,26 @@ var IP_CATS = [
 	{ key: 'other',    label: _('Other'),         cls: 'cb-src-manual' }
 ];
 
-// an app rendered as a coloured chip; the same name always gets the same hue
+// an app rendered as a coloured chip; the same name always gets the same hue.
+// Clicking one filters the view: the others fade so the selection reads at a
+// glance even in a dense list.
+var APP_FILTER = null;
+var APP_CHIP_CLICK = null;
+
 function appChip(name, text) {
 	var h = appHue(name);
+	var dim = APP_FILTER && APP_FILTER !== name;
 	return E('span', {
 		'class': 'cb-appchip',
+		'title': name,
 		'style': 'color:hsl(' + h + ',75%,72%);border-color:hsl(' + h + ',55%,45%);' +
-			'background:hsl(' + h + ',50%,22%)'
+			'background:hsl(' + h + ',50%,22%);cursor:pointer' +
+			(dim ? ';opacity:.22;filter:grayscale(1)' : '')
+		+ (APP_FILTER === name ? ';box-shadow:0 0 0 2px hsl(' + h + ',70%,55%)' : ''),
+		'click': function (ev) {
+			ev.stopPropagation();
+			if (APP_CHIP_CLICK) APP_CHIP_CLICK(name);
+		}
 	}, text || name);
 }
 
@@ -1164,6 +1177,12 @@ return view.extend({
 	},
 
 	renderAppStats: function () {
+		var selfC = this;
+		APP_FILTER = this.appFilter || null;
+		APP_CHIP_CLICK = function (name) {
+			selfC.appFilter = (selfC.appFilter === name) ? null : name;
+			selfC.renderAppStats();
+		};
 		var tbody = document.getElementById('cb-app-tbody');
 		if (!tbody) return;
 		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
