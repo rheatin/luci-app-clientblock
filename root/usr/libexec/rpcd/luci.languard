@@ -878,7 +878,16 @@ local function merge_geosite(fd, cats)
 	for _, a in ipairs(d.apps) do by_name[a.name] = a end
 	local made, updated, skipped = 0, 0, 0
 	for code, domains in pairs(cats) do
-		if GEOSITE_SKIP[code] then
+		-- the file spells these in upper case, so match on the lower form and
+		-- skip whole families rather than a fixed list
+		local lc = code:lower()
+		local routing = GEOSITE_SKIP[lc]
+			or lc:match("^geolocation") ~= nil
+			or lc:match("^category") ~= nil
+			or lc:match("^tld") ~= nil
+			or lc == "cn" or lc == "direct" or lc == "proxy" or lc == "private"
+			or lc == "gfw" or lc == "greatfire"
+		if routing then
 			skipped = skipped + 1
 		else
 			local sigs = {}
@@ -1381,14 +1390,22 @@ end
 -- Only the fields this engine understands are used (proto, dport, host, and
 -- an optional CIDR list). Payload fingerprints need packet capture and are
 -- left to a later stage.
+-- The library is read several times per tick; with a large bundle that parse
+-- dominated everything. It is only ever written by this process, so a copy
+-- cached until the next save is always correct.
+local _apps_cache
+
 load_apps = function()
+	if _apps_cache then return _apps_cache end
 	local d = load_json_map(APPS_FILE, function() return { seq = 0, apps = {} } end)
 	d.seq = tonumber(d.seq) or 0
 	d.apps = type(d.apps) == "table" and d.apps or {}
+	_apps_cache = d
 	return d
 end
 
 save_apps = function(d)
+	_apps_cache = d
 	return save_json_map(APPS_FILE, d)
 end
 
