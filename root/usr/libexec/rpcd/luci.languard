@@ -1680,7 +1680,17 @@ local function collect_app_stats(now)
 	end)
 	local today = os.date("%Y-%m-%d", now)
 	if st.day ~= today then
-		st.day, st.apps, st.dev = today, {}, {}
+		-- midnight is not a reset: the finished day is filed away so the
+		-- window can still be read, and only a week of it is worth keeping
+		st.hist = st.hist or {}
+		if st.day and st.day ~= "" and st.apps then
+			st.hist[st.day] = { apps = st.apps, dev = st.dev, low = st.low }
+		end
+		local days = {}
+		for d in pairs(st.hist) do days[#days + 1] = d end
+		table.sort(days)
+		for i = 1, #days - 7 do st.hist[days[i]] = nil end
+		st.day, st.apps, st.dev, st.low = today, {}, {}, nil
 	end
 
 	local seen = load_json_map(CT_SEEN_FILE, function() return {} end)
@@ -1763,12 +1773,30 @@ function methods.applist()
 	return { success = true, running = true, apps = out, day = st.day or "" }
 end
 
-function methods.appstats()
+function methods.appstats(range)
 	local st = load_json_map(APPSTAT_FILE, function() return { day = "", apps = {}, dev = {} } end)
+	local buckets = {}
+	if range == "week" then
+		buckets[#buckets + 1] = st
+		for _, h in pairs(st.hist or {}) do buckets[#buckets + 1] = h end
+	elseif range == "yesterday" then
+		local h = (st.hist or {})[os.date("%Y-%m-%d", os.time() - 86400)]
+		if h then buckets[#buckets + 1] = h end
+	else
+		buckets[#buckets + 1] = st
+	end
+	local apps, dev, low = {}, {}, {}
+	for _, b in ipairs(buckets) do
+		for k, v in pairs(b.apps or {}) do apps[k] = (apps[k] or 0) + v end
+		for k, v in pairs(b.low or {}) do low[k] = (low[k] or 0) + v end
+		for ip, m in pairs(b.dev or {}) do
+			dev[ip] = dev[ip] or {}
+			for k, v in pairs(m) do dev[ip][k] = (dev[ip][k] or 0) + v end
+		end
+	end
 	local names = {}
-	for name, bytes in pairs(st.apps or {}) do
-		names[#names + 1] = { name = name, bytes = bytes,
-		                      low = (st.low or {})[name] or 0 }
+	for name, bytes in pairs(apps) do
+		names[#names + 1] = { name = name, bytes = bytes, low = low[name] or 0 }
 	end
 	table.sort(names, function(a, b) return a.bytes > b.bytes end)
 	-- an address is only useful once it has a device behind it
@@ -1778,7 +1806,7 @@ function methods.appstats()
 	end
 
 	local devs, per_app = {}, {}
-	for ip, m in pairs(st.dev or {}) do
+	for ip, m in pairs(dev) do
 		local d = by_ip[ip]
 		local row = { ip = ip, bytes = 0, apps = {},
 		              mac = d and d.mac or nil,
@@ -1802,8 +1830,8 @@ function methods.appstats()
 		table.sort(list, function(a, b) return a.bytes > b.bytes end)
 	end
 
-	return { success = true, running = true, day = st.day or "", apps = names,
-	         dev = devs, per_app = per_app }
+	return { success = true, running = true, day = st.day or "", range = range or "today",
+	         apps = names, dev = devs, per_app = per_app }
 end
 
 function methods.appreset()
@@ -4944,7 +4972,7 @@ elseif arg[1] == "call" then
 		reply_list(res, { "apps" })
 		return
 	elseif name == "appstats" then
-		res = methods.appstats()
+		res = methods.appstats(req.range)
 		reply_list(res, { "apps", "dev" })
 		return
 	elseif name == "sample_start" then

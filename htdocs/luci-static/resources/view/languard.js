@@ -211,6 +211,8 @@ var STYLE = `
 .cb-btn:hover { background: var(--hover-faint); }
 .cb-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .cb-btn[disabled] { opacity: .45; cursor: default; }
+.cb-range { padding: .15rem .45rem; font-size: .72rem; }
+.cb-range-on { background: var(--hover-faint); border-color: var(--focus-ring); }
 .cb-btn-danger { border-color: var(--danger); color: var(--danger); }
 .cb-btn-danger:hover { background: var(--danger-surface); }
 .cb-btn-ok { border-color: var(--success); color: var(--success); }
@@ -1161,9 +1163,11 @@ return view.extend({
 		}).catch(function () {});
 	},
 
-	refreshAppStats: function () {
+	refreshAppStats: function (range) {
 		var self = this;
-		return Promise.all([ callAppList(), callAppStats() ]).then(function (r) {
+		if (typeof range !== 'string') range = self.appRange || 'today';
+		self.appRange = range;
+		return Promise.all([ callAppList(), callAppStats({ range: range }) ]).then(function (r) {
 			self.apps = (r[0] && r[0].apps) || [];
 			self.appStats = r[1] || {};
 			self.renderAppStats();
@@ -3078,7 +3082,19 @@ E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
 					E('span', { 'class': 'cb-dot' }),
 					E('span', {}, _('Traffic by app')),
-					E('span', { 'class': 'cb-count', 'id': 'cb-app-day', 'style': 'margin-left:auto' }, '')
+					E('span', { 'style': 'margin-left:auto;display:flex;gap:.3rem' },
+						[ [ 'today', _('Today') ], [ 'yesterday', _('Yesterday') ],
+						  [ 'week', _('Last 7 days') ] ].map(function (p) {
+							return E('button', {
+								'class': 'cb-btn cb-range' + (p[0] === 'today' ? ' cb-range-on' : ''),
+								'click': function (ev) {
+									ev.currentTarget.parentNode.querySelectorAll('.cb-range')
+										.forEach(function (b) { b.classList.remove('cb-range-on'); });
+									ev.currentTarget.classList.add('cb-range-on');
+									self.refreshAppStats(p[0]);
+								}
+							}, p[1]);
+						}))
 				]),
 				E('div', { 'class': 'cb-card-body' }, [
 					E('div', { 'class': 'cb-tablewrap' }, [
