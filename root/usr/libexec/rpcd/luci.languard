@@ -30,7 +30,10 @@ local CT_SEEN_FILE = STATE_DIR .. "/ct_seen.json"
 local APPIPS_FILE = STATE_DIR .. "/app_ips.json"
 local QOS_FILE = STATE_DIR .. "/app_qos.json"
 local FINGERPRINT_FILE = STATE_DIR .. "/fingerprint.json"
-local QOS_RULE_FILE = "/etc/nftables.d/91-languard-appqos.nft"
+-- never under /etc/nftables.d: fw4 includes that directory *inside* its own
+-- table, so a table declaration there is a syntax error and takes the whole
+-- firewall down with it
+local QOS_RULE_FILE = STATE_DIR .. "/appqos.nft"
 local DOMAIN_FILE = STATE_DIR .. "/domains.json"
 local DOMAIN_HOSTS = STATE_DIR .. "/domainblock.hosts"
 local NOTIFY_TMP = "/tmp/languard-notify.json"
@@ -3298,6 +3301,9 @@ function methods.sync()
 	else
 		reload_firewall()
 	end
+
+	-- the QoS table lives outside fw4 and is not restored by a reload
+	apply_qos()
 
 	local n = 0
 	for _ in pairs(state) do n = n + 1 end

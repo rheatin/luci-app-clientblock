@@ -980,3 +980,12 @@ msgstr "给这个应用起个名字"
 
 msgid "Game signatures are not published anywhere, so record them: start a capture, play, then save the flow that appears. Flows are grouped by port and by the first four bytes of the payload."
 msgstr "游戏特征库没有公开来源，只能自己录：开始采样，玩一局，把出现的流存成签名。流按端口和载荷前四个字节分组。"
+
+msgid "capturing"
+msgstr "采集中"
+
+msgid "stopped"
+msgstr "已停止"
+
+msgid "not sampling"
+msgstr "未开始"

@@ -1220,12 +1220,36 @@ return view.extend({
 		var self = this;
 		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
 
+		var running = !!(this.sample && this.sample.running);
+		var pkts = (this.sample && this.sample.packets) || 0;
+		var started = (this.sample && this.sample.started) || 0;
+		var dur = (this.sample && this.sample.duration) || 0;
+		var left = running && started && dur ? Math.max(0, dur - (Math.floor(Date.now() / 1000) - started)) : 0;
+
 		var st = document.getElementById('cb-sample-state');
-		if (st) {
-			st.textContent = this.sample && this.sample.running
-				? _('capturing…') + ' ' + (this.sample.packets || 0) + ' ' + _('packets')
-				: ((this.sample && this.sample.packets) ? this.sample.packets + ' ' + _('packets') : '');
+		if (st) st.textContent = running ? _('capturing') : (pkts ? _('stopped') : '');
+
+		// the state has to be unmistakable: a dot, the remaining time, and the
+		// button that would do nothing is disabled
+		var live = document.getElementById('cb-sample-live');
+		if (live) {
+			while (live.firstChild) live.removeChild(live.firstChild);
+			if (running) {
+				live.appendChild(E('span', {
+					'class': 'cb-res cb-health-ok', 'style': 'margin-right:.35rem' },
+					'● ' + _('capturing') + ' · ' + pkts + ' ' + _('packets') +
+					(left ? ' · ' + left + 's' : '')));
+			} else if (pkts) {
+				live.appendChild(E('span', { 'class': 'cb-drop' },
+					'○ ' + _('stopped') + ' · ' + pkts + ' ' + _('packets')));
+			} else {
+				live.appendChild(E('span', { 'class': 'cb-drop' }, '○ ' + _('not sampling')));
+			}
 		}
+		var sb = document.getElementById('cb-sample-start');
+		if (sb) sb.disabled = running;
+		var tb = document.getElementById('cb-sample-stop');
+		if (tb) tb.disabled = !running;
 
 		var groups = (this.sample && this.sample.groups) || [];
 		if (!groups.length) {
@@ -2922,10 +2946,11 @@ return view.extend({
 							E('option', { 'value': '60', 'selected': 'selected' }, '60 s'),
 							E('option', { 'value': '120' }, '120 s')
 						]),
-						E('button', { 'class': 'cb-btn cb-btn-primary',
+						E('button', { 'class': 'cb-btn cb-btn-primary', 'id': 'cb-sample-start',
 							'click': function (ev) { self.handleSampleStart(ev); } }, _('Start sampling')),
-						E('button', { 'class': 'cb-btn',
-							'click': function (ev) { self.handleSampleStop(ev); } }, _('Stop'))
+						E('button', { 'class': 'cb-btn', 'id': 'cb-sample-stop',
+							'click': function (ev) { self.handleSampleStop(ev); } }, _('Stop')),
+						E('span', { 'id': 'cb-sample-live', 'style': 'align-self:center;font-size:.8rem' }, '')
 					]),
 					E('div', { 'class': 'cb-tablewrap' }, [
 						E('table', { 'class': 'cb-table' }, [
