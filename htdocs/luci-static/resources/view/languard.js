@@ -2973,7 +2973,8 @@ E('div', { 'class': 'cb-card' }, [
 			E('div', { 'class': 'cb-note', 'style': 'margin:0 0 1rem;line-height:1.7' }, [
 				E('div', {}, _('IP list') + ' — ' + _('one address or CIDR per line; # comments, CSV columns and Spamhaus ; tails are tolerated')),
 				E('div', {}, _('Domain list') + ' — ' + _('one hostname per line; # comments ignored')),
-				E('div', {}, _('App signatures') + ' — ' + _('OAF format v3.0: id name:[proto;sport;dport;host;request;dict]'))
+				E('div', {}, _('App signatures') + ' — ' + _('OAF format v3.0: id name:[proto;sport;dport;host;request;dict]')),
+				E('div', {}, _('Geosite bundle') + ' — ' + _('a v2ray .dat file holding every category at once; routing categories are skipped'))
 			]),
 E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
@@ -2991,7 +2992,8 @@ E('div', { 'class': 'cb-card' }, [
 							E('select', { 'id': 'cb-feed-kind', 'class': 'cb-sel' }, [
 								E('option', { 'value': 'ip' }, _('IP list')),
 								E('option', { 'value': 'domain' }, _('Domain list')),
-								E('option', { 'value': 'app' }, _('App signatures'))
+								E('option', { 'value': 'app' }, _('App signatures')),
+								E('option', { 'value': 'geosite' }, _('Geosite bundle'))
 							]) ]),
 						E('label', {}, [ E('span', {}, _('List URL')),
 							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',

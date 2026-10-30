@@ -1067,3 +1067,9 @@ msgstr "开启 DNS 日志后才能看到命中"
 
 msgid "Hits are only visible in dnsmasq's query log, which records one line per query."
 msgstr "命中只能从 dnsmasq 的查询日志里看到，该日志会为每次查询记一行。"
+
+msgid "Geosite bundle"
+msgstr "Geosite 合集"
+
+msgid "a v2ray .dat file holding every category at once; routing categories are skipped"
+msgstr "一个 v2ray .dat 文件，包含全部分类；路由类分类会被跳过"
