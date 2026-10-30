@@ -1582,18 +1582,23 @@ end
 -- Clash reports sourceIP and sourcePort for every connection, and the router
 -- keeps the corresponding flow. Joining on that pair yields the address the
 -- client actually sent to, which for fake-ip mode is the only handle nft has.
+-- The flow table is read twice per tick (once for the fake-address index,
+-- once for the byte accounting). Reads are cheap but the popen is not, so
+-- the text is fetched once and reused.
+local function conntrack_text()
+	if IDX.ct then return IDX.ct end
+	return read_all("/proc/net/nf_conntrack") or ""
+end
+
 local function fake_ip_index(prefix)
 	local map = {}
-	local fh = io.popen("cat /proc/net/nf_conntrack 2>/dev/null", "r")
-	if not fh then return map end
-	for line in fh:lines() do
+	for line in conntrack_text():gmatch("[^\n]+") do
 		local src, dst, sport =
 			line:match("src=(%d+%.%d+%.%d+%.%d+)%s+dst=(%d+%.%d+%.%d+%.%d+)%s+sport=(%d+)%s+dport=")
 		if src and sport and src:sub(1, #prefix) == prefix and dst:sub(1, #prefix) ~= prefix then
 			map[src .. "|" .. sport] = dst
 		end
 	end
-	fh:close()
 	return map
 end
 
@@ -1658,9 +1663,7 @@ local function collect_app_stats(now)
 	local fresh = {}
 	local counted = collect_clash_stats(now, apps, st)
 
-	local fh = io.popen("cat /proc/net/nf_conntrack 2>/dev/null", "r")
-	if not fh then return nil end
-	for line in fh:lines() do
+	for line in conntrack_text():gmatch("[^\n]+") do
 		local proto = line:match("^ipv4%s+%d+%s+(%a+)")
 		if proto then
 			local src, dst, sport, dport =
@@ -1707,7 +1710,6 @@ local function collect_app_stats(now)
 			end
 		end
 	end
-	fh:close()
 
 	-- keep the table bounded: flows that are gone contribute nothing
 	local kept, n = {}, 0
@@ -4264,7 +4266,9 @@ function methods.tick()
 		save_json_map(FINGERPRINT_FILE, fst)
 	end
 	_qos_dirty = false
+	IDX.ct = read_all("/proc/net/nf_conntrack") or ""
 	local apps = collect_app_stats(now)
+	IDX.ct = nil
 	if _qos_dirty then apply_qos() end
 	-- keep the redirect chain in step with the rules: add the bypass return
 	-- when something needs it, remove it when nothing does
