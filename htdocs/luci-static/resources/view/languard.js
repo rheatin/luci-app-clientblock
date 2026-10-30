@@ -1237,7 +1237,10 @@ return view.extend({
 			tbody.appendChild(E('tr', {}, [
 				E('td', {}, r.ip || _('All devices')),
 				E('td', { 'class': 'cb-u' }, r.app || _('All apps')),
-				E('td', { 'class': 'cb-mono' }, r.dscp),
+				E('td', { 'class': 'cb-mono' },
+					r.action === 'block'
+						? E('span', { 'class': 'cb-src cb-src-panic' }, _('blocked'))
+						: r.dscp),
 				E('td', { 'class': 'cb-hide-sm cb-t' }, String(r.ips || 0)),
 				E('td', { 'style': 'text-align:right' },
 					E('button', { 'class': 'cb-btn cb-btn-danger',
@@ -2792,7 +2795,7 @@ return view.extend({
 				]),
 				E('div', { 'class': 'cb-card-body' }, [
 					E('p', { 'class': 'cb-note' },
-						_('Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Leave the device empty to cover every device.')),
+						_('Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Choosing block drops the traffic outright, which also works for proxied apps because the drop happens before Clash can pick the packet up. Leave the device empty to cover every device.')),
 					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
 						E('select', { 'id': 'cb-qos-dev', 'class': 'cb-sel' }, []),
 						E('select', { 'id': 'cb-qos-app', 'class': 'cb-sel' }, []),
@@ -2801,7 +2804,8 @@ return view.extend({
 							E('option', { 'value': 'af11' }, _('low (af11)')),
 							E('option', { 'value': 'cs0' }, _('normal (cs0)')),
 							E('option', { 'value': 'cs4' }, _('high (cs4)')),
-							E('option', { 'value': 'ef' }, _('highest (ef)'))
+							E('option', { 'value': 'ef' }, _('highest (ef)')),
+							E('option', { 'value': 'block' }, _('block entirely'))
 						]),
 						E('button', { 'class': 'cb-btn cb-btn-primary',
 							'click': function (ev) { self.handleQosAdd(ev); } }, _('Add rule'))

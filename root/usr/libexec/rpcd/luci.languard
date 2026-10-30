@@ -1622,10 +1622,22 @@ local function render_qos_rules()
 				conds[#conds + 1] = "ip daddr 0.0.0.0/32"   -- nothing learned yet
 			end
 		end
-		if #conds > 0 then
+		local label = (r.app or "device") .. (r.ip and ("@" .. r.ip) or "")
+		if #conds > 0 and r.action == "block" then
+			-- drop is terminal across tables, so it also stops the client's
+			-- packet before Clash can redirect it
+			lines[#lines + 1] = string.format(
+				"\t\t%s counter drop comment \"block:%s\"", table.concat(conds, " "), label)
+			if r.ip and r.ip ~= "" and r.app and r.app ~= "" then
+				local name = set_name_for(r.app)
+				lines[#lines + 1] = string.format(
+					"\t\tip saddr @%s ip daddr %s counter drop comment \"block:%s\"",
+					name, r.ip, label)
+			end
+		elseif #conds > 0 then
 			lines[#lines + 1] = string.format(
 				"\t\t%s ip dscp set %s counter comment \"qos:%s\"",
-				table.concat(conds, " "), dscp, (r.app or "device") .. (r.ip and ("@" .. r.ip) or ""))
+				table.concat(conds, " "), dscp, label)
 		end
 	end
 	lines[#lines + 1] = "\t}"
@@ -1650,7 +1662,7 @@ local function bypass_addresses()
 	local ips = load_appips()
 	local want, seen = {}, {}
 	for _, r in ipairs(d.rules) do
-		if r.app and r.app ~= "" and not seen[r.app] then
+		if r.app and r.app ~= "" and r.action ~= "block" and not seen[r.app] then
 			seen[r.app] = true
 			for _, ip in ipairs(ips[r.app] or {}) do
 				-- a fake address only means something inside Clash; routing
@@ -1700,6 +1712,7 @@ function methods.qoslist()
 	local out = {}
 	for _, r in ipairs(d.rules) do
 		out[#out + 1] = { id = r.id, ip = r.ip, app = r.app, dscp = r.dscp,
+		                  action = r.action or "dscp",
 		                  ips = (load_appips()[r.app] or {}) and #(load_appips()[r.app] or {}) or 0 }
 	end
 	return { success = true, running = true, rules = out, levels = QOS_LEVELS }
@@ -1709,7 +1722,9 @@ function methods.qosadd(ip, app, dscp)
 	if (not ip or ip == "") and (not app or app == "") then
 		return err("pick a device, an app, or both")
 	end
-	if dscp and QOS_LEVELS[dscp] == nil then return err("unknown class") end
+	if dscp and dscp ~= "block" and QOS_LEVELS[dscp] == nil then
+		return err("unknown class")
+	end
 	local d = load_qos()
 	for _, r in ipairs(d.rules) do
 		if (r.ip or "") == (ip or "") and (r.app or "") == (app or "") then
@@ -1718,7 +1733,8 @@ function methods.qosadd(ip, app, dscp)
 	end
 	d.seq = d.seq + 1
 	d.rules[#d.rules + 1] = { id = d.seq, ip = ip or "", app = app or "",
-	                          dscp = dscp or "cs1" }
+	                          dscp = (dscp ~= "block") and (dscp or "cs1") or nil,
+	                          action = (dscp == "block") and "block" or "dscp" }
 	save_json_map(QOS_FILE, d)
 	local okk = apply_qos()
 	return ok({ id = d.seq, applied = okk })
