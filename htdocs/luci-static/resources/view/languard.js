@@ -927,6 +927,7 @@ return view.extend({
 		var self = this;
 		var n = (document.getElementById('cb-feed-name') || {}).value || '';
 		var u = (document.getElementById('cb-feed-url') || {}).value || '';
+		var k = (document.getElementById('cb-feed-kind') || {}).value || 'ip';
 		if (!u) { ui.addNotification(null, E('p', {}, _('List URL is required')), 'warning'); return; }
 		var btn = ev.currentTarget; btn.disabled = true;
 		return callFeedAdd(n, u, '', k, '').then(function (res) {
