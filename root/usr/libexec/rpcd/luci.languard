@@ -1643,32 +1643,29 @@ local function collect_clash_stats(now, apps, st, seen)
 
 	-- `seen` belongs to the caller: both passes must write the same map, or
 	-- each save wipes the other's keys and every tick recounts whole flows
-	local counted = 0
+	-- Clash is the only place a fake address is tied to a name. Keep that
+	-- mapping across ticks: the flow lingers in the conntrack table after it
+	-- closes, and that is where its bytes are counted - counting them here as
+	-- well would double every proxied byte.
+	local cache = load_json_map(STATE_DIR .. "/fakeip.json", function() return {} end)
+	local fakeip = fake_ip_index(prefix)
+	local fresh, n = {}, 0
 	for _, c in ipairs(doc.connections or {}) do
 		local m = c.metadata or {}
-		local host = m.host or m.destinationIP
-		local dev = m.sourceIP
-		if host and dev and dev:find("^192%.168%.") then
-			local total = (tonumber(c.upload) or 0) + (tonumber(c.download) or 0)
-			local key = "clash|" .. tostring(c.id)
-			local prev = tonumber((seen[key] or {}).b) or 0
-			local delta = total - prev
-			if delta > 0 then
-				local app, conf = classify_flow(apps, (m.network or ""):lower(),
-					tonumber(m.destinationPort) or 0, m.destinationIP, host)
-				if app and conf == "high" then
-					if conf == "high" then
-						learn_app_ip(app.name,
-							fakeip[(m.sourceIP or "") .. "|" .. (m.sourcePort or "")] or m.destinationIP)
-					end
-					record(st, app.name, dev, delta, conf)
-					counted = counted + delta
-				end
-			end
-			seen[key] = { b = total }
+		-- a Redir connection reports no destinationIP; the address the client
+		-- actually dialled is the far end of its own flow, found by source port
+		local host = m.host
+		local dip = fakeip[(m.sourceIP or "") .. "|" .. (m.sourcePort or "")]
+		if host and dip and host ~= dip then
+			fresh[dip] = { h = host }
+			n = n + 1
 		end
 	end
-	return counted
+	for k, v in pairs(cache) do
+		if fresh[k] == nil and n < 60000 then fresh[k] = v; n = n + 1 end
+	end
+	save_json_map(STATE_DIR .. "/fakeip.json", fresh)
+	return fresh
 end
 
 local function collect_app_stats(now)
@@ -1688,7 +1685,8 @@ local function collect_app_stats(now)
 
 	local seen = load_json_map(CT_SEEN_FILE, function() return {} end)
 	local fresh = {}
-	local counted = collect_clash_stats(now, apps, st, seen)
+	local fake_cache = collect_clash_stats(now, apps, st, seen) or {}
+	local counted = 0
 
 	for line in conntrack_text():gmatch("[^\n]+") do
 		local proto, src, sport, dst, dport, total =
@@ -1718,7 +1716,8 @@ local function collect_app_stats(now)
 				-- were all being reported as a game. Only a hostname, an
 				-- address we learned, or a verified fingerprint counts.
 				if delta > 0 and dev_ip then
-					local app, conf = classify_flow(apps, proto, remote_port, remote_ip, nil)
+					local host = fake_cache[remote_ip] and fake_cache[remote_ip].h
+					local app, conf = classify_flow(apps, proto, remote_port, remote_ip, host)
 					if app and conf == "high" then
 						learn_app_ip(app.name, remote_ip)
 						record(st, app.name, dev_ip, delta, conf)
