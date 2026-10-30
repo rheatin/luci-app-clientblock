@@ -1483,7 +1483,7 @@ end
 local IDX = {}
 
 function IDX.build(apps)
-	local idx = { suffix = {}, substr = {}, port = {} }
+	local idx = { suffix = {}, label = {}, substr = {}, port = {} }
 	-- A category like APPLE or LE holds thousands of domains and would
 	-- otherwise claim everything a specific app also claims. Sorting by
 	-- domain count means the narrowest app owns a suffix.
@@ -1496,8 +1496,12 @@ function IDX.build(apps)
 		for _, sig in ipairs(a.sigs or {}) do
 			local h = sig.host and sig.host:lower() or ""
 			if h ~= "" then
-				if h:find(".", 1, true) and not h:find("*", 1, true) then
+				if not h:find("*", 1, true) and h:find(".", 1, true) then
 					idx.suffix[h] = idx.suffix[h] or a
+				elseif not h:find(".", 1, true) then
+					-- a bare label like "xiaohongshu" matches any host that
+					-- carries it as one of its labels
+					idx.label[h] = idx.label[h] or a
 				else
 					idx.substr[#idx.substr + 1] = { host = h, app = a, proto = sig.proto }
 				end
@@ -1534,6 +1538,18 @@ end
 local function classify_flow(apps, proto, port, ip, host)
 	local idx = IDX.get(apps)
 	if host and host ~= "" then
+		-- a bare label is the most specific thing there is: the curated
+		-- library names apps that way and must not lose to a bundle category
+		-- that happens to own the same domain
+		local h = host:lower()
+		local pos = 1
+		while true do
+			local a = idx.label[h:sub(pos, (h:find(".", pos, true) or (#h + 1)) - 1)]
+			if a then return a, "high" end
+			local dot = h:find(".", pos, true)
+			if not dot then break end
+			pos = dot + 1
+		end
 		local a = IDX.suffix_match(idx, host)
 		if a then return a, "high" end
 		for _, s in ipairs(idx.substr) do
