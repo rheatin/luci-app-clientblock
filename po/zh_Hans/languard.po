@@ -995,3 +995,33 @@ msgstr "订阅"
 
 msgid "Lists pulled from the internet. Each one declares what it feeds: an IP list becomes blocked addresses, a domain list becomes DNS blocks, an app list becomes the signatures used to recognise an app."
 msgstr "从互联网拉取的名单。每条都声明它流向哪里：IP 列表变成封禁地址，域名列表变成 DNS 拦截，应用列表变成识别用的特征签名。"
+
+msgid "Feeds into"
+msgstr "流向"
+
+msgid "address blocking"
+msgstr "地址封禁"
+
+msgid "domain blocking"
+msgstr "域名拦截"
+
+msgid "app recognition"
+msgstr "应用识别"
+
+msgid "IP list"
+msgstr "IP 列表"
+
+msgid "Domain list"
+msgstr "域名列表"
+
+msgid "App signatures"
+msgstr "应用特征"
+
+msgid "one address or CIDR per line; # comments, CSV columns and Spamhaus ; tails are tolerated"
+msgstr "每行一个 IP 或 CIDR；支持 # 注释、CSV 列、Spamhaus 的 ; 尾注"
+
+msgid "one hostname per line; # comments ignored"
+msgstr "每行一个主机名；忽略 # 注释"
+
+msgid "OAF format v3.0: id name:[proto;sport;dport;host;request;dict]"
+msgstr "OAF 格式 v3.0：id 名称:[proto;sport;dport;host;request;dict]"

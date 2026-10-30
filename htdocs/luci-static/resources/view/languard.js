@@ -960,7 +960,7 @@ return view.extend({
 		var self = this;
 		var list = this.feeds || [];
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 7, 'class': 'cb-empty' },
 				_('No subscriptions yet'))));
 			return;
 		}
@@ -1001,6 +1001,8 @@ return view.extend({
 						: ''
 				]),
 				E('td', { 'class': 'cb-hide-sm' }, f.kind || 'ip'),
+				E('td', { 'class': 'cb-hide-sm' }, (f.kind === 'domain') ? _('domain blocking')
+					: (f.kind === 'app') ? _('app recognition') : _('address blocking')),
 				E('td', { 'class': 'cb-t' }, String(f.imported || 0)),
 				E('td', {}, sel),
 				E('td', { 'style': 'font-size:.78rem;color:var(--text-muted)' },
@@ -1253,7 +1255,7 @@ return view.extend({
 
 		var groups = (this.sample && this.sample.groups) || [];
 		if (!groups.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 7, 'class': 'cb-empty' },
 				_('No capture yet'))));
 			return;
 		}
@@ -1331,7 +1333,7 @@ return view.extend({
 
 		var list = this.qos || [];
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 7, 'class': 'cb-empty' },
 				_('No rate rules yet'))));
 			return;
 		}
@@ -1737,7 +1739,7 @@ return view.extend({
 		}
 
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 7, 'class': 'cb-empty' },
 				_('No schedule rules yet'))));
 			return;
 		}
@@ -2412,6 +2414,13 @@ return view.extend({
 			if (btn) btn.classList.toggle('active', t === name);
 		});
 		if (name === 'overview') return this.refreshDash();
+		if (name === 'devices') {
+			var selfD = this;
+			return Promise.all([ this.refresh(), callList('0') ]).then(function (r) {
+				selfD.devices = (r[1] && r[1].devices) || selfD.devices || [];
+				return Promise.all([ selfD.refreshApps(), selfD.refreshQos() ]);
+			});
+		}
 		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshDomains(),
 			this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'apps') {
@@ -2675,6 +2684,41 @@ return view.extend({
 			'class': 'cb-pane',
 			'id': 'cb-pane-devices'
 		}, [
+E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Rate rules'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('p', { 'class': 'cb-note' },
+						_('Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Choosing block drops the traffic outright, which also works for proxied apps because the drop happens before Clash can pick the packet up. Leave the device empty to cover every device.')),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
+						E('select', { 'id': 'cb-qos-dev', 'class': 'cb-sel' }, []),
+						E('select', { 'id': 'cb-qos-app', 'class': 'cb-sel' }, []),
+						E('select', { 'id': 'cb-qos-dscp', 'class': 'cb-sel' }, [
+							E('option', { 'value': 'cs1' }, _('lowest (cs1)')),
+							E('option', { 'value': 'af11' }, _('low (af11)')),
+							E('option', { 'value': 'cs0' }, _('normal (cs0)')),
+							E('option', { 'value': 'cs4' }, _('high (cs4)')),
+							E('option', { 'value': 'ef' }, _('highest (ef)')),
+							E('option', { 'value': 'block' }, _('block entirely'))
+						]),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleQosAdd(ev); } }, _('Add rule'))
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Device')),
+								E('th', {}, _('App')),
+								E('th', {}, _('Class')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Addresses')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-qos-tbody' })
+						])
+					])
+				])
+			]),
 			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
 				_('Blocked devices lose all traffic through this router: Internet, DNS, DHCP and gateway services. Their packets are dropped at every interface.')),
 			E('div', { 'class': 'cb-toolbar' }, [
@@ -2813,6 +2857,11 @@ return view.extend({
 		}, [
 			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
 				_('Lists pulled from the internet. Each one declares what it feeds: an IP list becomes blocked addresses, a domain list becomes DNS blocks, an app list becomes the signatures used to recognise an app.')),
+			E('div', { 'class': 'cb-note', 'style': 'margin:0 0 1rem;line-height:1.7' }, [
+				E('div', {}, _('IP list') + ' — ' + _('one address or CIDR per line; # comments, CSV columns and Spamhaus ; tails are tolerated')),
+				E('div', {}, _('Domain list') + ' — ' + _('one hostname per line; # comments ignored')),
+				E('div', {}, _('App signatures') + ' — ' + _('OAF format v3.0: id name:[proto;sport;dport;host;request;dict]'))
+			]),
 E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
 					E('span', { 'class': 'cb-dot' }),
@@ -2840,7 +2889,8 @@ E('div', { 'class': 'cb-card' }, [
 					E('div', { 'class': 'cb-tablewrap' }, [
 						E('table', { 'class': 'cb-table' }, [
 							E('thead', {}, E('tr', {}, [
-								E('th', {}, _('Name')), E('th', { 'class': 'cb-hide-sm' }, _('Type')), E('th', {}, _('Imported')),
+								E('th', {}, _('Name')), E('th', { 'class': 'cb-hide-sm' }, _('Type')),
+							E('th', { 'class': 'cb-hide-sm' }, _('Feeds into')), E('th', {}, _('Imported')),
 								E('th', {}, _('Refresh')), E('th', {}, _('Last fetch')),
 								E('th', { 'style': 'text-align:right' }, _('Action'))
 							])),
@@ -2905,41 +2955,7 @@ E('div', { 'class': 'cb-card' }, [
 					])
 				])
 			]),
-			E('div', { 'class': 'cb-card' }, [
-				E('div', { 'class': 'cb-card-head' }, [
-					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Rate rules'))
-				]),
-				E('div', { 'class': 'cb-card-body' }, [
-					E('p', { 'class': 'cb-note' },
-						_('Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Choosing block drops the traffic outright, which also works for proxied apps because the drop happens before Clash can pick the packet up. Leave the device empty to cover every device.')),
-					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
-						E('select', { 'id': 'cb-qos-dev', 'class': 'cb-sel' }, []),
-						E('select', { 'id': 'cb-qos-app', 'class': 'cb-sel' }, []),
-						E('select', { 'id': 'cb-qos-dscp', 'class': 'cb-sel' }, [
-							E('option', { 'value': 'cs1' }, _('lowest (cs1)')),
-							E('option', { 'value': 'af11' }, _('low (af11)')),
-							E('option', { 'value': 'cs0' }, _('normal (cs0)')),
-							E('option', { 'value': 'cs4' }, _('high (cs4)')),
-							E('option', { 'value': 'ef' }, _('highest (ef)')),
-							E('option', { 'value': 'block' }, _('block entirely'))
-						]),
-						E('button', { 'class': 'cb-btn cb-btn-primary',
-							'click': function (ev) { self.handleQosAdd(ev); } }, _('Add rule'))
-					]),
-					E('div', { 'class': 'cb-tablewrap' }, [
-						E('table', { 'class': 'cb-table' }, [
-							E('thead', {}, E('tr', {}, [
-								E('th', {}, _('Device')),
-								E('th', {}, _('App')),
-								E('th', {}, _('Class')),
-								E('th', { 'class': 'cb-hide-sm' }, _('Addresses')),
-								E('th', { 'style': 'text-align:right' }, _('Action'))
-							])),
-							E('tbody', { 'id': 'cb-qos-tbody' })
-						])
-					])
-				])
-			]),
+			
 			E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
 					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Sample traffic')),
