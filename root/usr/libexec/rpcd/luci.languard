@@ -864,13 +864,6 @@ local function geosite_categories(data)
 	return out
 end
 
--- Categories that describe routing policy rather than an app.
-local GEOSITE_SKIP = {
-	cn = true, ["geolocation-!cn"] = true, private = true, direct = true,
-	proxy = true, gfw = true, greatfire = true,
-	["tld-!cn"] = true, ["tld-cn"] = true,
-	["category-ads-all"] = true, ["category-ads"] = true,
-}
 
 local function merge_geosite(fd, cats)
 	local d = load_apps()
@@ -881,8 +874,7 @@ local function merge_geosite(fd, cats)
 		-- the file spells these in upper case, so match on the lower form and
 		-- skip whole families rather than a fixed list
 		local lc = code:lower()
-		local routing = GEOSITE_SKIP[lc]
-			or lc:match("^geolocation") ~= nil
+		local routing = lc:match("^geolocation") ~= nil
 			or lc:match("^category") ~= nil
 			or lc:match("^tld") ~= nil
 			or lc == "cn" or lc == "direct" or lc == "proxy" or lc == "private"
@@ -1469,17 +1461,71 @@ local function sig_matches(sig, proto, port, ip, host)
 	return true
 end
 
--- Returns the app and how it was recognised. A match on the hostname or an
--- address range is trustworthy; a bare port is a guess, because nothing in
--- the packet was checked.
-local function classify_flow(apps, proto, port, ip, host)
-	for _, app in ipairs(apps.apps) do
-		for _, sig in ipairs(app.sigs or {}) do
-			if sig_matches(sig, proto, port, ip, host) then
-				local conf = ((sig.host and sig.host ~= "") or (sig.ip and sig.ip ~= ""))
-					and "high" or "low"
-				return app, conf
+-- Walking every signature for every flow does not scale: a geosite bundle
+-- brings 1400 apps and tens of thousands of domains, and a tick has a few
+-- thousand flows. Domains are therefore indexed by suffix, so a hostname is
+-- answered in a handful of lookups instead of a full scan. Signatures that
+-- are not plain domains (substrings, wildcards, ports) stay in short lists.
+-- Lua 5.1 allows 200 locals per chunk, so the index lives in one table
+local IDX = {}
+
+function IDX.build(apps)
+	local idx = { suffix = {}, substr = {}, port = {} }
+	for _, a in ipairs(apps.apps) do
+		for _, sig in ipairs(a.sigs or {}) do
+			local h = sig.host and sig.host:lower() or ""
+			if h ~= "" then
+				if h:find(".", 1, true) and not h:find("*", 1, true) then
+					idx.suffix[h] = idx.suffix[h] or a
+				else
+					idx.substr[#idx.substr + 1] = { host = h, app = a, proto = sig.proto }
+				end
+			elseif sig.dport and sig.dport ~= "" then
+				idx.port[#idx.port + 1] = { dport = sig.dport, proto = sig.proto, app = a }
 			end
+		end
+	end
+	return idx
+end
+
+function IDX.get(apps)
+	if IDX.cache == nil or IDX.src ~= apps then
+		IDX.cache = IDX.build(apps)
+		IDX.src = apps
+	end
+	return IDX.cache
+end
+
+function IDX.suffix_match(idx, host)
+	local h = host:lower()
+	local pos = 1
+	while true do
+		local a = idx.suffix[h:sub(pos)]
+		if a then return a end
+		local dot = h:find(".", pos, true)
+		if not dot then return nil end
+		pos = dot + 1
+	end
+end
+
+-- Returns the app and how it was recognised. A match on the hostname or an
+-- address range is trustworthy; a bare port is a guess.
+local function classify_flow(apps, proto, port, ip, host)
+	local idx = IDX.get(apps)
+	if host and host ~= "" then
+		local a = IDX.suffix_match(idx, host)
+		if a then return a, "high" end
+		for _, s in ipairs(idx.substr) do
+			if s.host ~= "" and host:lower():find(s.host, 1, true) then
+				if not s.proto or s.proto == "" or s.proto == proto then
+					return s.app, "high"
+				end
+			end
+		end
+	end
+	for _, s in ipairs(idx.port) do
+		if (not s.proto or s.proto == "" or s.proto == proto) and port_in(s.dport, port) then
+			return s.app, "low"
 		end
 	end
 	return nil
@@ -2178,7 +2224,6 @@ local function parse_pcap(data)
 	return out
 end
 
-local FP_NEXT = "/tmp/lg_fp_next.pcap"
 
 -- Parsing a capture blocks for as long as tcpdump runs. The work is split
 -- across two ticks instead: this round reads what the previous one recorded
@@ -2187,11 +2232,11 @@ local FP_NEXT = "/tmp/lg_fp_next.pcap"
 local function fingerprint_scan(apps, now)
 	local counted, learned = 0, 0
 
-	local f = io.open(FP_NEXT, "rb")
+	local f = io.open("/tmp/lg_fp_next.pcap", "rb")
 	if f then
 		local data = f:read("*a")
 		f:close()
-		os.remove(FP_NEXT)
+		os.remove("/tmp/lg_fp_next.pcap")
 		if data and #data > 24 then
 			local st = load_json_map(FINGERPRINT_FILE, function() return {} end)
 			for _, p in ipairs(parse_pcap(data)) do
@@ -2224,7 +2269,7 @@ local function fingerprint_scan(apps, now)
 	if filter then
 		sys.call(string.format(
 			"sh -c 'timeout 25 tcpdump -i br-lan -U -s 96 -c 400 -w %s %s >/dev/null 2>&1 &'",
-			FP_NEXT, shq(filter)))
+			"/tmp/lg_fp_next.pcap", shq(filter)))
 	end
 	return { hits = counted, learned = learned }
 end
