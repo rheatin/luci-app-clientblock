@@ -1585,16 +1585,27 @@ end
 -- The flow table is read twice per tick (once for the fake-address index,
 -- once for the byte accounting). Reads are cheap but the popen is not, so
 -- the text is fetched once and reused.
+-- Parsing 5000 conntrack lines with Lua patterns cost more than everything
+-- else in a tick. awk reduces each line to "proto src sport dst dport bytes",
+-- so Lua does one match per line instead of six.
 local function conntrack_text()
 	if IDX.ct then return IDX.ct end
-	return read_all("/proc/net/nf_conntrack") or ""
+	local out = sys.exec([[awk '/^ipv4/ { n=split($0,a," "); p=a[3]; s=""; d=""; sp=""; dp=""; b=0; c=0;
+	for(i=1;i<=n;i++){
+		if(a[i] ~ /^src=/){ c++; if(c==1) s=substr(a[i],5) }
+		else if(a[i] ~ /^dst=/){ if(c==1) d=substr(a[i],5) }
+		else if(a[i] ~ /^sport=/){ if(c==1) sp=substr(a[i],7) }
+		else if(a[i] ~ /^dport=/){ if(c==1) dp=substr(a[i],7) }
+		else if(a[i] ~ /^bytes=/){ b += substr(a[i],7) }
+	}
+	if(s != "") print p, s, sp, d, dp, b }' /proc/net/nf_conntrack 2>/dev/null]])
+	return out or ""
 end
 
 local function fake_ip_index(prefix)
 	local map = {}
 	for line in conntrack_text():gmatch("[^\n]+") do
-		local src, dst, sport =
-			line:match("src=(%d+%.%d+%.%d+%.%d+)%s+dst=(%d+%.%d+%.%d+%.%d+)%s+sport=(%d+)%s+dport=")
+		local _, src, sport, dst = line:match("^(%S+) (%S+) (%S+) (%S+) ")
 		if src and sport and src:sub(1, #prefix) == prefix and dst:sub(1, #prefix) ~= prefix then
 			map[src .. "|" .. sport] = dst
 		end
@@ -1664,19 +1675,11 @@ local function collect_app_stats(now)
 	local counted = collect_clash_stats(now, apps, st)
 
 	for line in conntrack_text():gmatch("[^\n]+") do
-		local proto = line:match("^ipv4%s+%d+%s+(%a+)")
+		local proto, src, sport, dst, dport, total =
+			line:match("^(%S+) (%S+) (%S+) (%S+) (%S+) (%d+)")
 		if proto then
-			local src, dst, sport, dport =
-				line:match("src=(%d+%.%d+%.%d+%.%d+)%s+dst=(%d+%.%d+%.%d+%.%d+)%s+sport=(%d+)%s+dport=(%d+)")
-			if src then
-				-- both directions carry bytes; sum them
-				local b1, b2 = 0, 0
-				local n = 0
-				for b in line:gmatch("bytes=(%d+)") do
-					n = n + 1
-					if n == 1 then b1 = tonumber(b) else b2 = tonumber(b) end
-				end
-				local total = b1 + b2
+			do
+				total = tonumber(total)
 				local key = proto .. "|" .. src .. "|" .. sport .. "|" .. dst .. "|" .. dport
 				local prev = seen[key]
 				local delta = total - (prev and tonumber(prev.b) or 0)
