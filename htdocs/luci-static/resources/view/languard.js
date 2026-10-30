@@ -79,7 +79,7 @@ var callWlList = rpc.declare({ object: 'luci.languard', method: 'wllist' });
 var callWlAdd = rpc.declare({ object: 'luci.languard', method: 'wladd', params: ['mac'] });
 var callWlDel = rpc.declare({ object: 'luci.languard', method: 'wldel', params: ['mac'] });
 var callFeedList = rpc.declare({ object: 'luci.languard', method: 'feedlist' });
-var callFeedAdd = rpc.declare({ object: 'luci.languard', method: 'feedadd', params: ['name', 'url', 'interval'] });
+var callFeedAdd = rpc.declare({ object: 'luci.languard', method: 'feedadd', params: ['name', 'url', 'interval', 'kind', 'cls'] });
 var callFeedSet = rpc.declare({ object: 'luci.languard', method: 'feedset', params: ['id', 'interval'] });
 var callFeedDel = rpc.declare({ object: 'luci.languard', method: 'feeddel', params: ['id'] });
 var callFeedRefresh = rpc.declare({ object: 'luci.languard', method: 'feedrefresh', params: ['id'] });
@@ -924,7 +924,7 @@ return view.extend({
 		var u = (document.getElementById('cb-feed-url') || {}).value || '';
 		if (!u) { ui.addNotification(null, E('p', {}, _('List URL is required')), 'warning'); return; }
 		var btn = ev.currentTarget; btn.disabled = true;
-		return callFeedAdd(n, u).then(function (res) {
+		return callFeedAdd(n, u, '', k, '').then(function (res) {
 			if (res && res.success === false) throw new Error(res.error || _('Failed'));
 			document.getElementById('cb-feed-url').value = '';
 			return self.refreshFeeds();
@@ -960,7 +960,7 @@ return view.extend({
 		var self = this;
 		var list = this.feeds || [];
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
 				_('No subscriptions yet'))));
 			return;
 		}
@@ -1000,6 +1000,7 @@ return view.extend({
 							_('truncated to') + ' ' + (f.imported || 0) + ' / ' + (f.total || 0))
 						: ''
 				]),
+				E('td', { 'class': 'cb-hide-sm' }, f.kind || 'ip'),
 				E('td', { 'class': 'cb-t' }, String(f.imported || 0)),
 				E('td', {}, sel),
 				E('td', { 'style': 'font-size:.78rem;color:var(--text-muted)' },
@@ -1306,7 +1307,7 @@ return view.extend({
 
 		var list = this.qos || [];
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
 				_('No rate rules yet'))));
 			return;
 		}
@@ -1712,7 +1713,7 @@ return view.extend({
 		}
 
 		if (!list.length) {
-			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' },
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
 				_('No schedule rules yet'))));
 			return;
 		}
@@ -2732,6 +2733,12 @@ return view.extend({
 						E('label', {}, [ E('span', {}, _('Name')),
 							E('input', { 'type': 'text', 'id': 'cb-feed-name', 'placeholder': _('optional'),
 								'style': 'width:9rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('label', {}, [ E('span', {}, _('Type')),
+							E('select', { 'id': 'cb-feed-kind', 'class': 'cb-sel' }, [
+								E('option', { 'value': 'ip' }, _('IP list')),
+								E('option', { 'value': 'domain' }, _('Domain list')),
+								E('option', { 'value': 'app' }, _('App signatures'))
+							]) ]),
 						E('label', {}, [ E('span', {}, _('List URL')),
 							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',
 								'style': 'width:18rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
@@ -2741,7 +2748,7 @@ return view.extend({
 					E('div', { 'class': 'cb-tablewrap' }, [
 						E('table', { 'class': 'cb-table' }, [
 							E('thead', {}, E('tr', {}, [
-								E('th', {}, _('Name')), E('th', {}, _('Imported')),
+								E('th', {}, _('Name')), E('th', { 'class': 'cb-hide-sm' }, _('Type')), E('th', {}, _('Imported')),
 								E('th', {}, _('Refresh')), E('th', {}, _('Last fetch')),
 								E('th', { 'style': 'text-align:right' }, _('Action'))
 							])),

@@ -54,6 +54,7 @@ local notify_event
 local load_domains, save_domains, is_domain_token, apply_domains
 local collect_devices
 local learn_app_ip
+local load_apps, save_apps
 
 
 local function trim(s)
@@ -666,20 +667,24 @@ function methods.feedlist()
 		                  enabled = fd.enabled ~= false, imported = counts[tostring(fd.id)] or 0,
 		                  last = fd.last, last_count = fd.last_count,
 		                  interval = tonumber(fd.interval) or 0,
+		                  kind = fd.kind or "ip", cls = fd.cls,
 		                  last_error = fd.last_error,
 		                  total = fd.last_total, truncated = fd.last_truncated }
 	end
 	return { success = true, running = true, feeds = out }
 end
 
-function methods.feedadd(name, url, interval)
+function methods.feedadd(name, url, interval, kind, cls)
 	if tostring(url or "") == "" then return err("url required") end
 	local f = load_feeds()
 	f.seq = (tonumber(f.seq) or 0) + 1
 	local iv = tonumber(interval)
 	if iv == nil then iv = 86400 end
+	kind = tostring(kind or "ip")
+	if kind ~= "ip" and kind ~= "domain" and kind ~= "app" then kind = "ip" end
 	f.feeds[#f.feeds + 1] = { id = f.seq, name = (name ~= "" and name) or tostring(url),
-	                          url = url, enabled = true, interval = iv }
+	                          url = url, enabled = true, interval = iv,
+	                          kind = kind, cls = (cls ~= "" and cls) or nil }
 	save_json_map(FEEDS_FILE, f)
 	return ok({ id = f.seq })
 end
@@ -734,6 +739,47 @@ local function feed_skip(ip)
 		return true
 	end
 	return false
+end
+
+-- A v2fly style list: one domain per line, "include:" and "regexp:" lines
+-- are not addresses, and "@cn" is a routing hint rather than part of the name.
+local function parse_domain_list(raw)
+	local out, seen = {}, {}
+	for line in raw:gmatch("[^\r\n]+") do
+		line = line:gsub("#.*$", ""):gsub("%s+$", "")
+		if line ~= "" and not line:find("^include:") and not line:find("^regexp:") then
+			line = line:gsub("^full:", ""):gsub("%s*@!?[%w-]+$", "")
+			if is_domain_token(line) and not seen[line] then
+				seen[line] = true
+				out[#out + 1] = line
+			end
+		end
+	end
+	return out
+end
+
+-- An app feed replaces that app's signatures outright: the upstream file is
+-- the authority for it. Hand-written extras belong under another name.
+local function merge_app_feed(fd, domains)
+	if #domains == 0 then return nil, "no domains in list" end
+	local d = load_apps()
+	local sigs = {}
+	for _, dom in ipairs(domains) do
+		sigs[#sigs + 1] = { proto = "tcp", dport = "", host = dom, dict = "" }
+	end
+	for _, a in ipairs(d.apps) do
+		if a.name == fd.name then
+			a.sigs = sigs
+			a.class = fd.cls or a.class
+			save_apps(d)
+			return #sigs
+		end
+	end
+	d.seq = d.seq + 1
+	d.apps[#d.apps + 1] = { id = d.seq, name = fd.name, class = fd.cls or "other",
+	                        sigs = sigs, feed = tostring(fd.id) }
+	save_apps(d)
+	return #sigs
 end
 
 -- Fetch one feed into `ips` without touching the firewall. Returns the set of
@@ -1032,6 +1078,19 @@ function methods.feedrefresh(id)
 	end
 	if not fd then return err("no such feed") end
 
+	if (fd.kind or "ip") == "app" then
+		local tmp = "/tmp/languard-feed.txt"
+		local rc = sys.call(string.format("curl -fsSL -m 60 -o %s %s", tmp, shq(fd.url)))
+		local raw = read_all(tmp)
+		fs.unlink(tmp)
+		if rc ~= 0 or not raw then return err("download failed") end
+		local n, why = merge_app_feed(fd, parse_domain_list(raw))
+		if not n then return err(why) end
+		fd.last, fd.last_count, fd.last_error = os.time(), n, nil
+		save_json_map(FEEDS_FILE, f)
+		return ok({ added = n, merged = n, total = n })
+	end
+
 	local ips = load_ipstate()
 	local delta, why = fetch_feed(fd, ips, os.time())
 	if not delta then
@@ -1146,14 +1205,14 @@ end
 -- Only the fields this engine understands are used (proto, dport, host, and
 -- an optional CIDR list). Payload fingerprints need packet capture and are
 -- left to a later stage.
-local function load_apps()
+load_apps = function()
 	local d = load_json_map(APPS_FILE, function() return { seq = 0, apps = {} } end)
 	d.seq = tonumber(d.seq) or 0
 	d.apps = type(d.apps) == "table" and d.apps or {}
 	return d
 end
 
-local function save_apps(d)
+save_apps = function(d)
 	return save_json_map(APPS_FILE, d)
 end
 
@@ -2052,6 +2111,12 @@ local function refresh_due_feeds(now)
 		end
 	end
 	if not due then return nil end
+
+	-- an app feed replaces a signature set, so reuse the manual path
+	if (due.kind or "ip") == "app" then
+		local r = methods.feedrefresh(due.id)
+		return { id = due.id, name = due.name, app = true, ok = r and r.success or false }
+	end
 
 	local ips = load_ipstate()
 	local delta, why = fetch_feed(due, ips, now)
@@ -4282,7 +4347,7 @@ if arg[1] == "list" then
 		portpresets = {},
 		porttemplate = { macs = "", preset = "" },
 		feedlist    = {},
-		feedadd     = { name = "", url = "" },
+		feedadd     = { name = "", url = "", interval = "", kind = "", cls = "" },
 		feeddel     = { id = "" },
 		feedrefresh = { id = "" },
 		feedset     = { id = "", interval = "" },
@@ -4475,7 +4540,7 @@ elseif arg[1] == "call" then
 		reply_list(res, { "feeds" })
 		return
 	elseif name == "feedadd" then
-		res = methods.feedadd(req.name, req.url)
+		res = methods.feedadd(req.name, req.url, req.interval, req.kind, req.cls)
 	elseif name == "feeddel" then
 		res = methods.feeddel(req.id)
 	elseif name == "feedrefresh" then
