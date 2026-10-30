@@ -38,6 +38,11 @@ var callAppList = rpc.declare({ object: 'luci.languard', method: 'applist' });
 var callAppStats = rpc.declare({ object: 'luci.languard', method: 'appstats' });
 var callAppImport = rpc.declare({ object: 'luci.languard', method: 'appimport', params: ['text'] });
 var callAppDel = rpc.declare({ object: 'luci.languard', method: 'appdel', params: ['id'] });
+var callSigList = rpc.declare({ object: 'luci.languard', method: 'siglist', params: ['name'] });
+var callDomainHits = rpc.declare({ object: 'luci.languard', method: 'domainhits', params: ['limit'] });
+var callDomainLog = rpc.declare({ object: 'luci.languard', method: 'domaintogglelog', params: ['on_'] });
+var callSigAdd = rpc.declare({ object: 'luci.languard', method: 'sigadd', params: ['name', 'proto', 'dport', 'host'] });
+var callSigDel = rpc.declare({ object: 'luci.languard', method: 'sigdel', params: ['name', 'idx'] });
 var callAppReset = rpc.declare({ object: 'luci.languard', method: 'appreset' });
 var callSampleStart = rpc.declare({ object: 'luci.languard', method: 'sample_start', params: ['duration'] });
 var callSampleStop = rpc.declare({ object: 'luci.languard', method: 'sample_stop' });
@@ -1091,6 +1096,8 @@ return view.extend({
 			self.apps = (res && res.apps) || [];
 			var cnt = document.getElementById('cb-app-count');
 			if (cnt) cnt.textContent = self.apps.length + ' ' + _('apps');
+			var sel = document.getElementById('cb-sig-app');
+			if (sel) delete sel.dataset.filled;
 		}).catch(function () {});
 	},
 
@@ -1102,6 +1109,8 @@ return view.extend({
 			self.renderAppStats();
 			var cnt = document.getElementById('cb-app-count');
 			if (cnt) cnt.textContent = self.apps.length + ' ' + _('apps');
+			var sel = document.getElementById('cb-sig-app');
+			if (sel) delete sel.dataset.filled;
 			var day = document.getElementById('cb-app-day');
 			if (day) day.textContent = self.appStats.day || '';
 		}).catch(function () {});
@@ -1371,6 +1380,110 @@ return view.extend({
 		}).catch(function (e) {
 			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
 		}).finally(function () { btn.disabled = false; });
+	},
+
+	refreshDomainHits: function () {
+		var self = this;
+		return callDomainHits(40).then(function (res) {
+			self.dh = res || {};
+			var st = document.getElementById('cb-dh-state');
+			if (st) st.textContent = self.dh.enabled
+				? (self.dh.count || 0) + ' ' + _('hits')
+				: _('logging off');
+			var tb = document.getElementById('cb-dh-tbody');
+			if (!tb) return;
+			while (tb.firstChild) tb.removeChild(tb.firstChild);
+			var hits = (self.dh.hits || []);
+			if (!hits.length) {
+				tb.appendChild(E('tr', {}, E('td', { 'colspan': 2, 'class': 'cb-empty' },
+					self.dh.enabled ? _('No blocked domain was queried yet') : _('Enable DNS logging to see hits'))));
+				return;
+			}
+			hits.forEach(function (h) {
+				tb.appendChild(E('tr', {}, [
+					E('td', { 'class': 'cb-mono' }, h.domain),
+					E('td', { 'class': 'cb-mono' }, h.ip)
+				]));
+			});
+		}).catch(function () {});
+	},
+
+	handleDomainLog: function (ev) {
+		var self = this;
+		var on = !(this.dh && this.dh.enabled);
+		return callDomainLog(on ? '1' : '0').then(function () {
+			return self.refreshDomainHits();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		});
+	},
+
+	handleAppUrlImport: function (ev) {
+		var self = this;
+		var url = (document.getElementById('cb-app-url') || {}).value || '';
+		var name = (document.getElementById('cb-app-urlname') || {}).value || '';
+		if (!url.trim()) return;
+		if (!name.trim()) {
+			ui.addNotification(null, E('p', {}, _('Give the app a name first')), 'warning');
+			return;
+		}
+		var btn = ev.currentTarget;
+		btn.disabled = true;
+		return callFeedAdd(name.trim(), url.trim(), '', 'app', 'other').then(function (res) {
+			if (res && res.success === false) throw new Error(res.error || _('Failed'));
+			document.getElementById('cb-app-url').value = '';
+			document.getElementById('cb-app-urlname').value = '';
+			return self.refreshAppStats();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		}).finally(function () { btn.disabled = false; });
+	},
+
+	loadSigs: function (name) {
+		var self = this;
+		var sel = document.getElementById('cb-sig-app');
+		if (sel && !sel.dataset.filled) {
+			sel.appendChild(E('option', { 'value': '' }, _('Pick an app')));
+			(this.apps || []).forEach(function (a) {
+				sel.appendChild(E('option', { 'value': a.name }, a.name));
+			});
+			sel.dataset.filled = '1';
+			if (name) sel.value = name;
+		}
+		if (!name) return;
+		return callSigList(name).then(function (res) {
+			self.sigs = (res && res.sigs) || [];
+			self.sigApp = name;
+			self.renderSigs();
+		}).catch(function () {});
+	},
+
+	renderSigs: function () {
+		var tbody = document.getElementById('cb-sig-tbody');
+		if (!tbody) return;
+		var self = this;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+		var cnt = document.getElementById('cb-sig-count');
+		if (cnt) cnt.textContent = (this.sigs || []).length + ' ' + _('signatures');
+		if (!(this.sigs || []).length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 5, 'class': 'cb-empty' }, _('None'))));
+			return;
+		}
+		this.sigs.forEach(function (sg) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-mono' }, sg.proto || '-'),
+				E('td', { 'class': 'cb-mono' }, sg.dport || '-'),
+				E('td', { 'class': 'cb-mono' }, sg.host || '-'),
+				E('td', { 'class': 'cb-mono', 'style': 'font-size:.72rem' }, sg.dict || '-'),
+				E('td', { 'style': 'text-align:right' },
+					E('button', { 'class': 'cb-btn cb-btn-danger', 'style': 'padding:.05rem .5rem',
+						'click': function () {
+							callSigDel(self.sigApp, sg.idx).then(function () {
+								return self.loadSigs(self.sigApp);
+							});
+						} }, _('Delete')))
+			]));
+		});
 	},
 
 	handleAppImport: function (ev) {
@@ -2425,7 +2538,7 @@ return view.extend({
 			this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'apps') {
 			var selfA = this;
-			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0'), this.refreshSample() ])
+			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0'), this.refreshSample(), this.refreshDomainHits() ])
 				.then(function (r) {
 					selfA.devices = (r[2] && r[2].devices) || selfA.devices || [];
 					return selfA.refreshQos();
@@ -2933,6 +3046,29 @@ E('div', { 'class': 'cb-card' }, [
 			]),
 			E('div', { 'class': 'cb-card' }, [
 				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Blocked domains')),
+					E('span', { 'class': 'cb-count', 'id': 'cb-dh-state', 'style': 'margin-left:auto' }, '')
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.5rem' }, [
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleDomainLog(ev); } }, _('Enable DNS logging')),
+						E('span', { 'class': 'cb-note' },
+							_('Hits are only visible in dnsmasq\'s query log, which records one line per query.'))
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Domain')),
+								E('th', {}, _('Device'))
+							])),
+							E('tbody', { 'id': 'cb-dh-tbody' })
+						])
+					])
+				])
+			]),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
 					E('span', { 'class': 'cb-dot' }), E('span', {}, _('By device'))
 				]),
 				E('div', { 'class': 'cb-card-body' }, E('div', { 'id': 'cb-app-dev', 'class': 'cb-dash-rows' }))
@@ -2952,6 +3088,32 @@ E('div', { 'class': 'cb-card' }, [
 						E('button', { 'class': 'cb-btn cb-btn-primary',
 							'click': function (ev) { self.handleAppImport(ev); } }, _('Import')),
 						E('span', { 'class': 'cb-count', 'id': 'cb-app-count' }, '')
+					]),
+					E('div', { 'class': 'cb-actions', 'style': 'margin:.6rem 0' }, [
+						E('input', { 'type': 'text', 'id': 'cb-app-url', 'class': 'cb-input',
+							'placeholder': 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/bilibili',
+							'style': 'flex:1 1 18rem' }),
+						E('input', { 'type': 'text', 'id': 'cb-app-urlname', 'class': 'cb-input',
+							'placeholder': _('app name'), 'style': 'max-width:10rem' }),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleAppUrlImport(ev); } }, _('Add from URL'))
+					]),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.5rem' }, [
+						E('select', { 'id': 'cb-sig-app', 'class': 'cb-sel',
+							'change': function (ev) { self.loadSigs(ev.target.value); } }, []),
+						E('span', { 'class': 'cb-count', 'id': 'cb-sig-count' }, '')
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Proto')),
+								E('th', {}, _('Port')),
+								E('th', {}, _('Host')),
+								E('th', {}, _('Fingerprint')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-sig-tbody' })
+						])
 					])
 				])
 			]),

@@ -870,6 +870,46 @@ apply_domains = function()
 	end
 end
 
+-- dnsmasq answers blocked names with 0.0.0.0, so a hit is only visible in its
+-- query log. Reading it is opt-in: the setting costs one line per DNS query.
+local function dns_logging()
+	return (trim(sys.exec("uci -q get dhcp.@dnsmasq[0].logqueries 2>/dev/null") or "") == "1")
+end
+
+function methods.domainhits(limit)
+	limit = tonumber(limit) or 50
+	local enabled = dns_logging()
+	if not enabled then
+		return { success = true, running = true, enabled = false, hits = {}, count = 0 }
+	end
+	local blocked = load_domains().names
+	local hits, seen = {}, 0
+	local fh = io.popen("logread 2>/dev/null | grep -F 'query[' | tail -n 4000", "r")
+	if fh then
+		for line in fh:lines() do
+			local dom, ip = line:match("query%[%w+%]%s+(%S+)%s+from%s+(%d+%.%d+%.%d+%.%d+)")
+			if dom and blocked[dom] then
+				hits[#hits + 1] = { domain = dom, ip = ip }
+			end
+		end
+		fh:close()
+	end
+	-- newest first, and only the page that is shown
+	local out = {}
+	for i = #hits, math.max(1, #hits - limit + 1), -1 do
+		out[#out + 1] = hits[i]
+	end
+	return { success = true, running = true, enabled = true, hits = out, count = #hits }
+end
+
+function methods.domaintogglelog(on_)
+	local on = (on_ ~= false and on_ ~= "0" and on_ ~= "false")
+	sys.call(string.format("uci set dhcp.@dnsmasq[0].logqueries=%s; uci commit dhcp",
+		on and "1" or "0"))
+	sys.call("/etc/init.d/dnsmasq reload >/dev/null 2>&1")
+	return ok({ enabled = on })
+end
+
 function methods.domainlist()
 	local d = load_domains()
 	local names = {}
@@ -1577,6 +1617,52 @@ function methods.appimport(text)
 	if added + merged == 0 then return err("nothing recognised") end
 	save_apps(d)
 	return ok({ added = added, merged = merged, total = #d.apps })
+end
+
+-- Manual editing: a sampled or imported app always needs a touch-up.
+function methods.siglist(name)
+	local d = load_apps()
+	for _, a in ipairs(d.apps) do
+		if a.name == name then
+			local out = {}
+			for i, sig in ipairs(a.sigs or {}) do
+				out[#out + 1] = { idx = i, proto = sig.proto, dport = sig.dport,
+				                  host = sig.host, dict = sig.dict }
+			end
+			return ok({ name = a.name, class = a.class, sigs = out })
+		end
+	end
+	return err("no such app")
+end
+
+function methods.sigadd(name, proto, dport, host)
+	local d = load_apps()
+	for _, a in ipairs(d.apps) do
+		if a.name == name then
+			local sig = { proto = proto or "", dport = dport or "", host = host or "", dict = "" }
+			if not sig_usable(sig, a.class) then
+				return err("that would match everything: give a hostname, or a game port")
+			end
+			a.sigs[#a.sigs + 1] = sig
+			save_apps(d)
+			return ok({ count = #a.sigs })
+		end
+	end
+	return err("no such app")
+end
+
+function methods.sigdel(name, idx)
+	local d = load_apps()
+	for _, a in ipairs(d.apps) do
+		if a.name == name then
+			idx = tonumber(idx)
+			if not idx or not a.sigs[idx] then return err("no such signature") end
+			table.remove(a.sigs, idx)
+			save_apps(d)
+			return ok({ count = #a.sigs })
+		end
+	end
+	return err("no such app")
 end
 
 function methods.appdel(id)
@@ -4368,10 +4454,15 @@ if arg[1] == "list" then
 		appstats    = {},
 		appimport   = { text = "" },
 		appdel      = { id = "" },
+		siglist     = { name = "" },
+		sigadd      = { name = "", proto = "", dport = "", host = "" },
+		sigdel      = { name = "", idx = "" },
 		appreset    = {},
 		devmerge    = { mac = "", into = "" },
 		devunmerge  = { mac = "" },
 		domainlist  = {},
+		domainhits  = { limit = "" },
+		domaintogglelog = { on_ = "" },
 		domainadd   = { name = "" },
 		domaindel   = { name = "" },
 		domaintoggle = { on_ = "" },
@@ -4581,6 +4672,14 @@ elseif arg[1] == "call" then
 		res = methods.qosdel(req.id)
 	elseif name == "appimport" then
 		res = methods.appimport(req.text)
+	elseif name == "siglist" then
+		res = methods.siglist(req.name)
+		reply_list(res, { "sigs" })
+		return
+	elseif name == "sigadd" then
+		res = methods.sigadd(req.name, req.proto, req.dport, req.host)
+	elseif name == "sigdel" then
+		res = methods.sigdel(req.name, req.idx)
 	elseif name == "appdel" then
 		res = methods.appdel(req.id)
 	elseif name == "appreset" then
@@ -4593,6 +4692,12 @@ elseif arg[1] == "call" then
 		res = methods.domainlist()
 		reply_list(res, { "domains" })
 		return
+	elseif name == "domainhits" then
+		res = methods.domainhits(req.limit)
+		reply_list(res, { "hits" })
+		return
+	elseif name == "domaintogglelog" then
+		res = methods.domaintogglelog(req.on_)
 	elseif name == "domainadd" then
 		res = methods.domainadd(req.name)
 	elseif name == "domaindel" then

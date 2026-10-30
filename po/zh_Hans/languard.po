@@ -1025,3 +1025,45 @@ msgstr "每行一个主机名；忽略 # 注释"
 
 msgid "OAF format v3.0: id name:[proto;sport;dport;host;request;dict]"
 msgstr "OAF 格式 v3.0：id 名称:[proto;sport;dport;host;request;dict]"
+
+msgid "Add from URL"
+msgstr "从链接添加"
+
+msgid "app name"
+msgstr "应用名"
+
+msgid "Pick an app"
+msgstr "选择应用"
+
+msgid "signatures"
+msgstr "条签名"
+
+msgid "Host"
+msgstr "主机名"
+
+msgid "Fingerprint"
+msgstr "指纹"
+
+msgid "Give the app a name first"
+msgstr "先给应用起个名字"
+
+msgid "Blocked domains"
+msgstr "被拦截的域名"
+
+msgid "Enable DNS logging"
+msgstr "开启 DNS 日志"
+
+msgid "logging off"
+msgstr "日志未开启"
+
+msgid "hits"
+msgstr "次命中"
+
+msgid "No blocked domain was queried yet"
+msgstr "还没有被拦截的域名查询"
+
+msgid "Enable DNS logging to see hits"
+msgstr "开启 DNS 日志后才能看到命中"
+
+msgid "Hits are only visible in dnsmasq's query log, which records one line per query."
+msgstr "命中只能从 dnsmasq 的查询日志里看到，该日志会为每次查询记一行。"
