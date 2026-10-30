@@ -2391,11 +2391,10 @@ return view.extend({
 	tabPanes: {
 		overview: [ 'dash' ],
 		devices: [ 'devices' ],
-		ips: [ 'ips' ],
 		apps: [ 'apps' ],
-		logs: [ 'logs' ],
-		policy: [ 'sched' ],
-		settings: [ 'auto', 'notify', 'health', 'backup' ]
+		ips: [ 'ips', 'sched' ],
+		feeds: [ 'feeds' ],
+		settings: [ 'auto', 'notify', 'health', 'backup', 'logs' ]
 	},
 
 	switchTab: function (name) {
@@ -2408,12 +2407,13 @@ return view.extend({
 			var el = document.getElementById('cb-pane-' + p);
 			if (el) el.classList.toggle('active', mine.indexOf(p) !== -1);
 		});
-		['overview', 'devices', 'ips', 'apps', 'logs', 'policy', 'settings'].forEach(function (t) {
+		['overview', 'devices', 'apps', 'ips', 'feeds', 'settings'].forEach(function (t) {
 			var btn = document.getElementById('cb-tab-' + t);
 			if (btn) btn.classList.toggle('active', t === name);
 		});
 		if (name === 'overview') return this.refreshDash();
-		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds(), this.refreshDomains() ]);
+		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshDomains(),
+			this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
 		if (name === 'apps') {
 			var selfA = this;
 			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0'), this.refreshSample() ])
@@ -2422,8 +2422,7 @@ return view.extend({
 					return selfA.refreshQos();
 				});
 		}
-		if (name === 'logs') return this.refreshLogs();
-		if (name === 'policy') return Promise.all([ this.refreshSched(), this.refreshGroups(), this.refreshPorts() ]);
+		if (name === 'feeds') return this.refreshFeeds();
 		if (name === 'settings') {
 			var self2 = this;
 			return Promise.all([ this.refreshAuto(), this.refreshNotify(), this.refreshHealth() ])
@@ -2745,42 +2744,7 @@ return view.extend({
 		}, [
 			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
 				_('Blocked addresses cannot be reached from your LAN, and cannot reach it. Both directions are dropped. CIDR ranges are supported.')),
-			E('div', { 'class': 'cb-card' }, [
-				E('div', { 'class': 'cb-card-head' }, [
-					E('span', { 'class': 'cb-dot' }),
-					E('span', {}, _('Blocklist subscriptions'))
-				]),
-				E('div', { 'class': 'cb-card-body' }, [
-					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
-						_('Pull public blocklists on demand and merge them here. Entries are tagged with their feed so removing the feed also removes them.')),
-					E('div', { 'class': 'cb-sched-form', 'style': 'padding:0;border:none;background:none;margin-bottom:.6rem' }, [
-						E('label', {}, [ E('span', {}, _('Name')),
-							E('input', { 'type': 'text', 'id': 'cb-feed-name', 'placeholder': _('optional'),
-								'style': 'width:9rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
-						E('label', {}, [ E('span', {}, _('Type')),
-							E('select', { 'id': 'cb-feed-kind', 'class': 'cb-sel' }, [
-								E('option', { 'value': 'ip' }, _('IP list')),
-								E('option', { 'value': 'domain' }, _('Domain list')),
-								E('option', { 'value': 'app' }, _('App signatures'))
-							]) ]),
-						E('label', {}, [ E('span', {}, _('List URL')),
-							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',
-								'style': 'width:18rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
-						E('button', { 'class': 'cb-btn',
-							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed'))
-					]),
-					E('div', { 'class': 'cb-tablewrap' }, [
-						E('table', { 'class': 'cb-table' }, [
-							E('thead', {}, E('tr', {}, [
-								E('th', {}, _('Name')), E('th', { 'class': 'cb-hide-sm' }, _('Type')), E('th', {}, _('Imported')),
-								E('th', {}, _('Refresh')), E('th', {}, _('Last fetch')),
-								E('th', { 'style': 'text-align:right' }, _('Action'))
-							])),
-							E('tbody', { 'id': 'cb-feed-tbody' })
-						])
-					])
-				])
-			]),
+			,
 			E('div', { 'style': 'display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.6rem' }, [
 				E('span', { 'style': 'font-size:.8rem;opacity:.6;align-self:center' }, _('Quick fill:')),
 				E('button', {
@@ -2839,6 +2803,50 @@ return view.extend({
 						])
 					]),
 					E('div', { 'class': 'cb-proxylist', 'id': 'cb-domain-list' }, [])
+				])
+			])
+		]);
+
+		var feedsPane = E('div', {
+			'class': 'cb-pane',
+			'id': 'cb-pane-feeds'
+		}, [
+			E('p', { 'style': 'opacity:.75;margin:.25rem 0 1rem' },
+				_('Lists pulled from the internet. Each one declares what it feeds: an IP list becomes blocked addresses, a domain list becomes DNS blocks, an app list becomes the signatures used to recognise an app.')),
+E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }),
+					E('span', {}, _('Blocklist subscriptions'))
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('div', { 'class': 'cb-card-hint', 'style': 'margin-bottom:.7rem' },
+						_('Pull public blocklists on demand and merge them here. Entries are tagged with their feed so removing the feed also removes them.')),
+					E('div', { 'class': 'cb-sched-form', 'style': 'padding:0;border:none;background:none;margin-bottom:.6rem' }, [
+						E('label', {}, [ E('span', {}, _('Name')),
+							E('input', { 'type': 'text', 'id': 'cb-feed-name', 'placeholder': _('optional'),
+								'style': 'width:9rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('label', {}, [ E('span', {}, _('Type')),
+							E('select', { 'id': 'cb-feed-kind', 'class': 'cb-sel' }, [
+								E('option', { 'value': 'ip' }, _('IP list')),
+								E('option', { 'value': 'domain' }, _('Domain list')),
+								E('option', { 'value': 'app' }, _('App signatures'))
+							]) ]),
+						E('label', {}, [ E('span', {}, _('List URL')),
+							E('input', { 'type': 'text', 'id': 'cb-feed-url', 'placeholder': 'https://host/list.netset',
+								'style': 'width:18rem;padding:.35rem .5rem;border-radius:.3rem;border:1px solid var(--hairline);background:var(--surface-sunken);color:inherit' }) ]),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleFeedAdd(ev); } }, _('Add feed'))
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Name')), E('th', { 'class': 'cb-hide-sm' }, _('Type')), E('th', {}, _('Imported')),
+								E('th', {}, _('Refresh')), E('th', {}, _('Last fetch')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-feed-tbody' })
+						])
+					])
 				])
 			])
 		]);
@@ -3138,16 +3146,16 @@ return view.extend({
 			E('div', { 'class': 'cb-tabs' }, [
 				tabBtn('overview', _('Overview')),
 				tabBtn('devices', _('Devices')),
-				tabBtn('ips', _('Addresses')),
-				tabBtn('apps', _('Apps')),
-				tabBtn('logs', _('Log')),
-				tabBtn('policy', _('Policy')),
+				tabBtn('apps', _('Traffic')),
+				tabBtn('ips', _('Policy')),
+				tabBtn('feeds', _('Feeds')),
 				tabBtn('settings', _('Settings'))
 			]),
 			dashPane,
 			devicesPane,
 			ipsPane,
 			appsPane,
+			feedsPane,
 			autoPane,
 			backupPane,
 			logsPane,
