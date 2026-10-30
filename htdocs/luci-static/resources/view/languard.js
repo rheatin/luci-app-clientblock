@@ -1200,7 +1200,9 @@ return view.extend({
 			(self.apps || []).forEach(function (x) { if (x.name === a.name) meta = x; });
 			var active = self.appFilter === a.name;
 			tbody.appendChild(E('tr', {
-				'style': 'cursor:pointer' + (active ? ';background:var(--brand-subtle)' : ''),
+				'style': 'cursor:pointer' +
+					(active ? ';background:var(--brand-subtle)' : '') +
+					((self.appFilter && !active) ? ';opacity:.32' : ''),
 				'click': function () {
 					self.appFilter = active ? null : a.name;
 					self.renderAppStats();
@@ -1238,33 +1240,6 @@ return view.extend({
 
 		var devs = (this.appStats && this.appStats.dev) || [];
 		var filter = this.appFilter;
-
-		if (filter) {
-			box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
-				E('span', { 'class': 'cb-k' }, _('Devices using') + ' ' + filter),
-				E('button', { 'class': 'cb-btn', 'style': 'margin-left:auto',
-					'click': function () { self.appFilter = null; self.renderAppStats(); } },
-					_('Show all'))
-			]));
-			var users = [];
-			devs.forEach(function (d) {
-				(d.apps || []).forEach(function (x) {
-					if (x.name === filter) users.push({ dev: d, bytes: x.bytes });
-				});
-			});
-			users.sort(function (a, b) { return b.bytes - a.bytes; });
-			if (!users.length) {
-				box.appendChild(E('span', { 'class': 'cb-note' }, _('None')));
-				return;
-			}
-			users.forEach(function (u) {
-				box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
-					E('span', { 'class': 'cb-k' }, (u.dev.name || u.dev.ip) + ' · ' + u.dev.ip),
-					appChip(filter, fmtBytes(u.bytes))
-				]));
-			});
-			return;
-		}
 
 		if (!devs.length) {
 			box.appendChild(E('span', { 'class': 'cb-note' }, _('None')));
