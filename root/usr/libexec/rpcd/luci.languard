@@ -2178,50 +2178,56 @@ local function parse_pcap(data)
 	return out
 end
 
+local FP_NEXT = "/tmp/lg_fp_next.pcap"
+
+-- Parsing a capture blocks for as long as tcpdump runs. The work is split
+-- across two ticks instead: this round reads what the previous one recorded
+-- and immediately starts the next capture in the background, so tick stays
+-- in the millisecond range and nothing waits on a timeout.
 local function fingerprint_scan(apps, now)
-	local filter = fingerprint_ports(apps)
-	if not filter then return nil end
-	local cap = "/tmp/lg_fingerprint.pcap"
-	os.remove(cap)
-	sys.call(string.format(
-		"timeout 4 tcpdump -i br-lan -s 96 -c 250 -w %s %s 2>/dev/null", cap, shq(filter)))
-	local f = io.open(cap, "rb")
-	if not f then return nil end
-	local data = f:read("*a")
-	f:close()
-	os.remove(cap)
-	if not data or #data < 24 then return nil end
+	local counted, learned = 0, 0
 
-	local packets = parse_pcap(data)
-	local hit, learned = 0, 0
-	local st = load_json_map(FINGERPRINT_FILE, function() return {} end)
-
-	for _, p in ipairs(packets) do
-		if #p.payload >= 6 then
-			for _, a in ipairs(apps.apps) do
-				local matched = false
-				for _, sig in ipairs(a.sigs or {}) do
-					if sig.dict and sig.dict ~= "" and sig.proto == p.proto
-					   and port_in(sig.dport, p.dport)
-					   and dict_match(sig.dict, p.payload) then
-						matched = true
-						break
+	local f = io.open(FP_NEXT, "rb")
+	if f then
+		local data = f:read("*a")
+		f:close()
+		os.remove(FP_NEXT)
+		if data and #data > 24 then
+			local st = load_json_map(FINGERPRINT_FILE, function() return {} end)
+			for _, p in ipairs(parse_pcap(data)) do
+				if #p.payload >= 6 then
+					for _, a in ipairs(apps.apps) do
+						local matched = false
+						for _, sig in ipairs(a.sigs or {}) do
+							if sig.dict and sig.dict ~= "" and sig.proto == p.proto
+							   and port_in(sig.dport, p.dport)
+							   and dict_match(sig.dict, p.payload) then
+								matched = true
+								break
+							end
+						end
+						if matched then
+							counted = counted + 1
+							st[a.name] = { ts = now, hits = ((st[a.name] or {}).hits or 0) + 1 }
+							learn_app_ip(a.name, p.dst)
+							learned = learned + 1
+							break
+						end
 					end
 				end
-				if matched then
-					hit = hit + 1
-					st[a.name] = { ts = now, hits = ((st[a.name] or {}).hits or 0) + 1 }
-					learn_app_ip(a.name, p.dst)
-					learned = learned + 1
-					break
-				end
 			end
+			if counted > 0 then save_json_map(FINGERPRINT_FILE, st) end
 		end
 	end
-	if hit > 0 then save_json_map(FINGERPRINT_FILE, st) end
-	return { packets = #packets, hits = hit, learned = learned }
-end
 
+	local filter = fingerprint_ports(apps)
+	if filter then
+		sys.call(string.format(
+			"sh -c 'timeout 25 tcpdump -i br-lan -U -s 96 -c 400 -w %s %s >/dev/null 2>&1 &'",
+			FP_NEXT, shq(filter)))
+	end
+	return { hits = counted, learned = learned }
+end
 
 -- ---- manual sampling ---------------------------------------------------
 -- Game signatures cannot be downloaded from anywhere, so the only way to get
@@ -4141,8 +4147,24 @@ function methods.expire()
 end
 
 -- Called once a minute by the watcher: schedules first, then expiry.
+function methods.tickcfg()
+	local d = load_json_map(STATE_DIR .. "/tick.json", function() return { enabled = true } end)
+	if d.enabled == nil then d.enabled = true end
+	return { success = true, running = true, enabled = d.enabled }
+end
+
+function methods.tickset(on_)
+	local on = (on_ ~= false and on_ ~= "0" and on_ ~= "false")
+	save_json_map(STATE_DIR .. "/tick.json", { enabled = on })
+	return ok({ enabled = on })
+end
+
 function methods.tick()
 	local now = os.time()
+	local cfg = load_json_map(STATE_DIR .. "/tick.json", function() return { enabled = true } end)
+	if cfg.enabled == false then
+		return { success = true, running = true, skipped = true }
+	end
 	local e = methods.expire()
 	local sc = methods.schedeval()
 	local nd = check_new_devices()
@@ -4636,6 +4658,8 @@ if arg[1] == "list" then
 		notifytest   = { id = "" },
 		expire      = {},
 		tick        = {},
+		tickcfg     = {},
+		tickset     = { on_ = "" },
 		schedlist   = {},
 		schedadd    = { mac = "", days = "", start = "", stop = "", name = "" },
 		scheddel    = { id = "" },
@@ -4736,6 +4760,10 @@ elseif arg[1] == "call" then
 		res = methods.expire()
 		reply_list(res, { "expired" })
 		return
+	elseif name == "tickcfg" then
+		res = methods.tickcfg()
+	elseif name == "tickset" then
+		res = methods.tickset(req.on_)
 	elseif name == "tick" then
 		res = methods.tick()
 		reply_list(res, { "expired" })
