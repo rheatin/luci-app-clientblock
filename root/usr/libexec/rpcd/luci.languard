@@ -4045,12 +4045,17 @@ end
 
 function save_json_map(file, v)
 	fs.mkdirr(STATE_DIR)
-	local f = io.open(file, "w")
-	if not f then return false end
 	local o = jsonc.stringify(v)
 	if o == "[]" then o = "{}" end
+	-- write beside the target and rename: a reader that opens the file while
+	-- it is being rewritten gets a truncated document, fails to parse it and
+	-- then saves the empty result back, wiping everything the file held
+	local tmp = file .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then return false end
 	f:write(o)
 	f:close()
+	os.rename(tmp, file)
 	return true
 end
 
