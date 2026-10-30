@@ -1613,7 +1613,7 @@ local function fake_ip_index(prefix)
 	return map
 end
 
-local function collect_clash_stats(now, apps, st)
+local function collect_clash_stats(now, apps, st, seen)
 	local secret = clash_secret()
 	if not secret then return 0 end
 	local prefix = lan_prefix() or "192.168."
@@ -1625,7 +1625,8 @@ local function collect_clash_stats(now, apps, st)
 	local ok_, doc = pcall(jsonc.parse, raw)
 	if not ok_ or type(doc) ~= "table" then return 0 end
 
-	local seen = load_json_map(CT_SEEN_FILE, function() return {} end)
+	-- `seen` belongs to the caller: both passes must write the same map, or
+	-- each save wipes the other's keys and every tick recounts whole flows
 	local counted = 0
 	for _, c in ipairs(doc.connections or {}) do
 		local m = c.metadata or {}
@@ -1651,7 +1652,6 @@ local function collect_clash_stats(now, apps, st)
 			seen[key] = { b = total }
 		end
 	end
-	save_json_map(CT_SEEN_FILE, seen)
 	return counted
 end
 
@@ -1672,7 +1672,7 @@ local function collect_app_stats(now)
 
 	local seen = load_json_map(CT_SEEN_FILE, function() return {} end)
 	local fresh = {}
-	local counted = collect_clash_stats(now, apps, st)
+	local counted = collect_clash_stats(now, apps, st, seen)
 
 	for line in conntrack_text():gmatch("[^\n]+") do
 		local proto, src, sport, dst, dport, total =
@@ -1714,11 +1714,15 @@ local function collect_app_stats(now)
 		end
 	end
 
-	-- keep the table bounded: flows that are gone contribute nothing
+	-- keep only the keys touched in this tick; a flow that is gone
+	-- contributes nothing, and a dropped key would be recounted in full
 	local kept, n = {}, 0
 	for k, v in pairs(fresh) do
 		n = n + 1
 		if n <= 8000 then kept[k] = v end
+	end
+	for k, v in pairs(seen) do
+		if k:sub(1, 6) == "clash|" and kept[k] == nil then kept[k] = v end
 	end
 
 	save_json_map(CT_SEEN_FILE, kept)
@@ -4269,7 +4273,8 @@ function methods.tick()
 		save_json_map(FINGERPRINT_FILE, fst)
 	end
 	_qos_dirty = false
-	IDX.ct = read_all("/proc/net/nf_conntrack") or ""
+	-- clear the shared copy so this tick rebuilds it from the current table
+	IDX.ct = nil
 	local apps = collect_app_stats(now)
 	IDX.ct = nil
 	if _qos_dirty then apply_qos() end
