@@ -418,6 +418,8 @@ var STYLE = `
 .cb-import { width: 100%; box-sizing: border-box; font-family: var(--font-mono);
 	font-size: .78rem; padding: .5rem; border-radius: .3rem; resize: vertical;
 	border: 1px solid var(--hairline); background: var(--surface-sunken); color: inherit; }
+.cb-appchip { display: inline-block; padding: .04rem .45rem; border-radius: .6rem;
+	border: 1px solid; font-size: .74rem; margin: 0 .25rem .2rem 0; white-space: nowrap; }
 .cb-sel { padding: .25rem .4rem; border-radius: .3rem; border: 1px solid var(--hairline);
 	background: var(--surface-sunken); color: inherit; font-size: .8rem;
 	/* without this the native popup is drawn in the OS light palette */
@@ -503,6 +505,16 @@ var IP_CATS = [
 	{ key: 'import',   label: _('Imported'),      cls: 'cb-src-watchdog' },
 	{ key: 'other',    label: _('Other'),         cls: 'cb-src-manual' }
 ];
+
+// an app rendered as a coloured chip; the same name always gets the same hue
+function appChip(name, text) {
+	var h = appHue(name);
+	return E('span', {
+		'class': 'cb-appchip',
+		'style': 'color:hsl(' + h + ',75%,72%);border-color:hsl(' + h + ',55%,45%);' +
+			'background:hsl(' + h + ',50%,22%)'
+	}, text || name);
+}
 
 // a stable colour per app name, so the eye can follow one app down the list
 function appHue(name) {
@@ -1229,7 +1241,7 @@ return view.extend({
 			users.forEach(function (u) {
 				box.appendChild(E('div', { 'class': 'cb-dash-row' }, [
 					E('span', { 'class': 'cb-k' }, (u.dev.name || u.dev.ip) + ' · ' + u.dev.ip),
-					E('span', { 'class': 'cb-v' }, fmtBytes(u.bytes))
+					appChip(filter, fmtBytes(u.bytes))
 				]));
 			});
 			return;
@@ -1245,9 +1257,9 @@ return view.extend({
 					(d.name || d.ip),
 					E('span', { 'class': 'cb-drop' }, '  ' + d.ip)
 				]),
-				E('span', { 'class': 'cb-v' }, d.apps.slice(0, 3).map(function (x) {
-					return x.name + ' ' + fmtBytes(x.bytes);
-				}).join(' · '))
+				E('span', { 'class': 'cb-v' }, d.apps.slice(0, 4).map(function (x) {
+					return appChip(x.name, x.name + ' ' + fmtBytes(x.bytes));
+				}))
 			]));
 		});
 	},
