@@ -941,3 +941,42 @@ msgstr "完全封禁"
 
 msgid "Sets a DSCP class on matching traffic; qosmate turns that into an hfsc class. Choosing block drops the traffic outright, which also works for proxied apps because the drop happens before Clash can pick the packet up. Leave the device empty to cover every device."
 msgstr "给匹配的流量打 DSCP 标记，qosmate 映射成 hfsc 队列；选「完全封禁」则直接丢弃。封禁对代理应用同样有效，因为丢弃发生在 Clash 接管之前。设备留空表示对所有设备生效。"
+
+msgid "Sample traffic"
+msgstr "流量采样"
+
+msgid "Start sampling"
+msgstr "开始采样"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Proto"
+msgstr "协议"
+
+msgid "First bytes"
+msgstr "前几个字节"
+
+msgid "Hits"
+msgstr "命中"
+
+msgid "Peer"
+msgstr "对端"
+
+msgid "No capture yet"
+msgstr "还没有采样"
+
+msgid "capturing…"
+msgstr "采集中…"
+
+msgid "packets"
+msgstr "个包"
+
+msgid "Save as signature"
+msgstr "存为签名"
+
+msgid "Name this app"
+msgstr "给这个应用起个名字"
+
+msgid "Game signatures are not published anywhere, so record them: start a capture, play, then save the flow that appears. Flows are grouped by port and by the first four bytes of the payload."
+msgstr "游戏特征库没有公开来源，只能自己录：开始采样，玩一局，把出现的流存成签名。流按端口和载荷前四个字节分组。"

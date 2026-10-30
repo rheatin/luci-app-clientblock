@@ -39,6 +39,10 @@ var callAppStats = rpc.declare({ object: 'luci.languard', method: 'appstats' });
 var callAppImport = rpc.declare({ object: 'luci.languard', method: 'appimport', params: ['text'] });
 var callAppDel = rpc.declare({ object: 'luci.languard', method: 'appdel', params: ['id'] });
 var callAppReset = rpc.declare({ object: 'luci.languard', method: 'appreset' });
+var callSampleStart = rpc.declare({ object: 'luci.languard', method: 'sample_start', params: ['duration'] });
+var callSampleStop = rpc.declare({ object: 'luci.languard', method: 'sample_stop' });
+var callSampleResult = rpc.declare({ object: 'luci.languard', method: 'sample_result' });
+var callSampleSave = rpc.declare({ object: 'luci.languard', method: 'sample_save', params: ['name', 'proto', 'dport', 'prefix', 'cls'] });
 var callQosList = rpc.declare({ object: 'luci.languard', method: 'qoslist' });
 var callQosAdd = rpc.declare({ object: 'luci.languard', method: 'qosadd', params: ['ip', 'app', 'dscp'] });
 var callQosDel = rpc.declare({ object: 'luci.languard', method: 'qosdel', params: ['id'] });
@@ -1193,6 +1197,79 @@ return view.extend({
 		});
 	},
 
+	refreshSample: function () {
+		var self = this;
+		return callSampleResult().then(function (res) {
+			self.sample = res || {};
+			self.renderSample();
+			if (res && res.running) {
+				if (!self.sampleTimer) {
+					self.sampleTimer = window.setInterval(function () { self.refreshSample(); }, 3000);
+				}
+			} else if (self.sampleTimer) {
+				window.clearInterval(self.sampleTimer);
+				self.sampleTimer = null;
+			}
+		}).catch(function () {});
+	},
+
+	renderSample: function () {
+		var tbody = document.getElementById('cb-sample-tbody');
+		if (!tbody) return;
+		var self = this;
+		while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+		var st = document.getElementById('cb-sample-state');
+		if (st) {
+			st.textContent = this.sample && this.sample.running
+				? _('capturing…') + ' ' + (this.sample.packets || 0) + ' ' + _('packets')
+				: ((this.sample && this.sample.packets) ? this.sample.packets + ' ' + _('packets') : '');
+		}
+
+		var groups = (this.sample && this.sample.groups) || [];
+		if (!groups.length) {
+			tbody.appendChild(E('tr', {}, E('td', { 'colspan': 6, 'class': 'cb-empty' },
+				_('No capture yet'))));
+			return;
+		}
+		groups.forEach(function (g) {
+			tbody.appendChild(E('tr', {}, [
+				E('td', { 'class': 'cb-mono' }, g.proto),
+				E('td', { 'class': 'cb-mono' }, String(g.dport)),
+				E('td', { 'class': 'cb-mono', 'style': 'font-size:.75rem' }, g.prefix),
+				E('td', { 'class': 'cb-hide-sm cb-t' }, String(g.count)),
+				E('td', { 'class': 'cb-hide-sm', 'style': 'font-size:.75rem' }, (g.dsts || []).slice(0, 2).join(' ')),
+				E('td', { 'style': 'text-align:right' },
+					E('button', { 'class': 'cb-btn',
+						'click': function () {
+							var name = prompt(_('Name this app'), '');
+							if (!name) return;
+							callSampleSave(name, g.proto, String(g.dport), g.prefix, 'game')
+								.then(function () { return self.refreshAppStats(); })
+								.catch(function (e) {
+									ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+								});
+						} }, _('Save as signature')))
+			]));
+		});
+	},
+
+	handleSampleStart: function (ev) {
+		var self = this;
+		var dur = (document.getElementById('cb-sample-dur') || {}).value || '60';
+		return callSampleStart(dur).then(function () {
+			return self.refreshSample();
+		}).catch(function (e) {
+			ui.addNotification(null, E('p', {}, e.message || _('Failed')), 'error');
+		});
+	},
+
+	handleSampleStop: function (ev) {
+		var self = this;
+		return callSampleStop().then(function () { return self.refreshSample(); })
+			.catch(function () {});
+	},
+
 	refreshQos: function () {
 		var self = this;
 		return callQosList().then(function (res) {
@@ -2314,7 +2391,7 @@ return view.extend({
 		if (name === 'ips') return Promise.all([ this.refreshIps(), this.refreshFeeds(), this.refreshDomains() ]);
 		if (name === 'apps') {
 			var selfA = this;
-			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0') ])
+			return Promise.all([ this.refreshApps(), this.refreshAppStats(), callList('0'), this.refreshSample() ])
 				.then(function (r) {
 					selfA.devices = (r[2] && r[2].devices) || selfA.devices || [];
 					return selfA.refreshQos();
@@ -2820,6 +2897,40 @@ return view.extend({
 								E('th', { 'style': 'text-align:right' }, _('Action'))
 							])),
 							E('tbody', { 'id': 'cb-qos-tbody' })
+						])
+					])
+				])
+			]),
+			E('div', { 'class': 'cb-card' }, [
+				E('div', { 'class': 'cb-card-head' }, [
+					E('span', { 'class': 'cb-dot' }), E('span', {}, _('Sample traffic')),
+					E('span', { 'class': 'cb-count', 'id': 'cb-sample-state', 'style': 'margin-left:auto' }, '')
+				]),
+				E('div', { 'class': 'cb-card-body' }, [
+					E('p', { 'class': 'cb-note' },
+						_('Game signatures are not published anywhere, so record them: start a capture, play, then save the flow that appears. Flows are grouped by port and by the first four bytes of the payload.')),
+					E('div', { 'class': 'cb-actions', 'style': 'margin-bottom:.6rem' }, [
+						E('select', { 'id': 'cb-sample-dur', 'class': 'cb-sel' }, [
+							E('option', { 'value': '30' }, '30 s'),
+							E('option', { 'value': '60', 'selected': 'selected' }, '60 s'),
+							E('option', { 'value': '120' }, '120 s')
+						]),
+						E('button', { 'class': 'cb-btn cb-btn-primary',
+							'click': function (ev) { self.handleSampleStart(ev); } }, _('Start sampling')),
+						E('button', { 'class': 'cb-btn',
+							'click': function (ev) { self.handleSampleStop(ev); } }, _('Stop'))
+					]),
+					E('div', { 'class': 'cb-tablewrap' }, [
+						E('table', { 'class': 'cb-table' }, [
+							E('thead', {}, E('tr', {}, [
+								E('th', {}, _('Proto')),
+								E('th', {}, _('Port')),
+								E('th', {}, _('First bytes')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Hits')),
+								E('th', { 'class': 'cb-hide-sm' }, _('Peer')),
+								E('th', { 'style': 'text-align:right' }, _('Action'))
+							])),
+							E('tbody', { 'id': 'cb-sample-tbody' })
 						])
 					])
 				])

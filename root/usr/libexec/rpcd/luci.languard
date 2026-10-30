@@ -1853,6 +1853,7 @@ local function parse_pcap(data)
 				if vihl then
 					local ihl = (vihl % 16) * 4
 					local proto = pkt:byte(ipoff + 9)
+					local src = table.concat({ pkt:byte(ipoff + 12, ipoff + 15) }, ".")
 					local dst = table.concat({ pkt:byte(ipoff + 16, ipoff + 19) }, ".")
 					local l4 = ipoff + ihl
 					local sport, dport, pl
@@ -1869,7 +1870,7 @@ local function parse_pcap(data)
 					if dport then
 						out[#out + 1] = {
 							proto = (proto == 17) and "udp" or "tcp",
-							dst = dst, dport = dport, payload = pl or "",
+							src = src, dst = dst, dport = dport, payload = pl or "",
 						}
 					end
 				end
@@ -1921,6 +1922,120 @@ local function fingerprint_scan(apps, now)
 	end
 	if hit > 0 then save_json_map(FINGERPRINT_FILE, st) end
 	return { packets = #packets, hits = hit, learned = learned }
+end
+
+
+-- ---- manual sampling ---------------------------------------------------
+-- Game signatures cannot be downloaded from anywhere, so the only way to get
+-- one is to watch the game run. A capture is started on demand, the first
+-- bytes of every new flow are grouped by port and payload prefix, and a group
+-- the user recognises can be saved as a signature in one click.
+local SAMPLE_PCAP = "/tmp/lg_sample.pcap"
+local SAMPLE_STATE = STATE_DIR .. "/sample.json"
+
+local function sample_running()
+	return sys.call("pgrep -f 'tcpdump.*lg_sample' >/dev/null 2>&1") == 0
+end
+
+function methods.sample_start(duration)
+	duration = tonumber(duration) or 60
+	if duration < 10 then duration = 10 end
+	if duration > 300 then duration = 300 end
+	sys.call("pkill -f 'tcpdump.*lg_sample' 2>/dev/null")
+	os.remove(SAMPLE_PCAP)
+	sys.call(string.format(
+		"sh -c 'timeout %d tcpdump -i br-lan -U -s 96 -c 4000 -w %s " ..
+		"\"udp or tcp[tcpflags] & tcp-push != 0\" >/dev/null 2>&1 &'",
+		duration, SAMPLE_PCAP))
+	save_json_map(SAMPLE_STATE, { started = os.time(), duration = duration })
+	return ok({ started = os.time(), duration = duration })
+end
+
+function methods.sample_stop()
+	sys.call("pkill -f 'tcpdump.*lg_sample' 2>/dev/null")
+	return ok({})
+end
+
+function methods.sample_result()
+	local st = load_json_map(SAMPLE_STATE, function() return {} end)
+	local running = sample_running()
+	local f = io.open(SAMPLE_PCAP, "rb")
+	if not f then
+		return { success = true, running = running, groups = {},
+		         started = st.started, duration = st.duration, packets = 0 }
+	end
+	local data = f:read("*a")
+	f:close()
+	if not data or #data < 24 then
+		return { success = true, running = running, groups = {},
+		         started = st.started, duration = st.duration, packets = 0 }
+	end
+
+	local pkts = parse_pcap(data)
+	local groups = {}
+	local total = 0
+	for _, p in ipairs(pkts) do
+		if #p.payload >= 4 then
+			total = total + 1
+			-- the first four bytes are what a signature records
+			local hex = {}
+			for i = 1, 4 do hex[i] = string.format("%02x", p.payload:byte(i)) end
+			local prefix = table.concat(hex, ":")
+			local key = p.proto .. "|" .. p.dport .. "|" .. prefix
+			local g = groups[key]
+			if not g then
+				g = { proto = p.proto, dport = p.dport, prefix = prefix,
+				      count = 0, dsts = {}, srcs = {} }
+				groups[key] = g
+			end
+			g.count = g.count + 1
+			g.dsts[p.dst] = true
+			g.srcs[p.src] = true
+		end
+	end
+
+	local out = {}
+	for _, g in pairs(groups) do
+		local dsts, srcs = {}, {}
+		for ip in pairs(g.dsts) do dsts[#dsts + 1] = ip end
+		for ip in pairs(g.srcs) do srcs[#srcs + 1] = ip end
+		out[#out + 1] = { proto = g.proto, dport = g.dport, prefix = g.prefix,
+		                  count = g.count, dsts = dsts, srcs = srcs }
+	end
+	table.sort(out, function(a, b) return a.count > b.count end)
+	local top = {}
+	for i = 1, math.min(#out, 25) do top[i] = out[i] end
+
+	return { success = true, running = running, groups = top, packets = total,
+	         started = st.started, duration = st.duration }
+end
+
+-- Turn a sampled group into a signature: "00:33|1:66|2:00|3:0a" from the
+-- prefix, with the observed port kept as the match condition.
+function methods.sample_save(name, proto, dport, prefix, cls)
+	if not name or trim(name) == "" then return err("name required") end
+	if not prefix or prefix == "" then return err("no fingerprint") end
+	local parts = {}
+	local i = 0
+	for byte in prefix:gmatch("%x%x") do
+		parts[#parts + 1] = i .. ":" .. byte
+		i = i + 1
+	end
+	local dict = table.concat(parts, "|")
+
+	local d = load_apps()
+	for _, a in ipairs(d.apps) do
+		if a.name == trim(name) then
+			a.sigs[#a.sigs + 1] = { proto = proto or "", dport = dport or "", host = "", dict = dict }
+			save_apps(d)
+			return ok({ name = a.name, dict = dict, appended = true })
+		end
+	end
+	d.seq = d.seq + 1
+	d.apps[#d.apps + 1] = { id = d.seq, name = trim(name), class = cls or "game",
+	                        sigs = { { proto = proto or "", dport = dport or "", host = "", dict = dict } } }
+	save_apps(d)
+	return ok({ name = trim(name), dict = dict, appended = false })
 end
 
 -- Called from tick: refresh at most one due subscription per run so a slow
@@ -4173,6 +4288,10 @@ if arg[1] == "list" then
 		feedset     = { id = "", interval = "" },
 		applist     = {},
 		qoslist     = {},
+		sample_start = { duration = "" },
+		sample_stop  = {},
+		sample_result = {},
+		sample_save  = { name = "", proto = "", dport = "", prefix = "", cls = "" },
 		qosadd      = { ip = "", app = "", dscp = "" },
 		qosdel      = { id = "" },
 		appstats    = {},
@@ -4371,6 +4490,16 @@ elseif arg[1] == "call" then
 		res = methods.appstats()
 		reply_list(res, { "apps", "dev" })
 		return
+	elseif name == "sample_start" then
+		res = methods.sample_start(req.duration)
+	elseif name == "sample_stop" then
+		res = methods.sample_stop()
+	elseif name == "sample_result" then
+		res = methods.sample_result()
+		reply_list(res, { "groups" })
+		return
+	elseif name == "sample_save" then
+		res = methods.sample_save(req.name, req.proto, req.dport, req.prefix, req.cls)
 	elseif name == "qoslist" then
 		res = methods.qoslist()
 		reply_list(res, { "rules" })
