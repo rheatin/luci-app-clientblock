@@ -24,7 +24,11 @@ if [ -z "$name" ]; then
 	exit 0
 fi
 
-out="/tmp/lg_upload_$name"
+# /tmp is a ramdisk and disappears on reboot, which would leave the feed
+# pointing at nothing; the state directory survives.
+dir=/etc/languard/uploads
+mkdir -p "$dir"
+out="$dir/$name"
 cat > "$out" || {
 	printf 'Status: 500 Internal Server Error\r\n'
 	printf 'Content-Type: application/json\r\n\r\n'
