@@ -504,6 +504,14 @@ var IP_CATS = [
 	{ key: 'other',    label: _('Other'),         cls: 'cb-src-manual' }
 ];
 
+// a stable colour per app name, so the eye can follow one app down the list
+function appHue(name) {
+	var h = 0;
+	for (var i = 0; i < name.length; i++)
+		h = (h * 31 + name.charCodeAt(i)) % 360;
+	return h;
+}
+
 function catMeta(key) {
 	for (var i = 0; i < IP_CATS.length; i++)
 		if (IP_CATS[i].key === key) return IP_CATS[i];
@@ -1168,6 +1176,10 @@ return view.extend({
 				}
 			}, [
 				E('td', { 'class': 'cb-u' }, [
+					E('span', {
+						'style': 'display:inline-block;width:.55rem;height:.55rem;border-radius:50%;' +
+							'margin-right:.45rem;background:hsl(' + appHue(a.name) + ',62%,52%)'
+					}),
 					a.name,
 					(meta && meta.generic)
 						? E('span', { 'class': 'cb-src cb-src-manual', 'style': 'margin-left:.35rem',

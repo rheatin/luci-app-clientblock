@@ -2056,10 +2056,26 @@ local function apply_bypass()
 		BYPASS_SET, BYPASS_SET))
 	sys.call("nft flush set inet fw4 " .. BYPASS_SET .. " 2>/dev/null")
 	if #list > 0 then nft_chunk(BYPASS_SET, "add", list) end
-	if not bypass_rule_present() then
-		-- fw4 reloads and OpenClash restarts rebuild this chain, so the rule
-		-- is re-inserted at the top whenever it is missing
-		sys.call("nft insert rule inet fw4 openclash ip daddr @" .. BYPASS_SET .. " return 2>/dev/null")
+	if #list > 0 then
+		if not bypass_rule_present() then
+			-- fw4 reloads and OpenClash restarts rebuild this chain, so the
+			-- rule is re-inserted whenever it is missing
+			sys.call("nft insert rule inet fw4 openclash ip daddr @" .. BYPASS_SET .. " return 2>/dev/null")
+		end
+	elseif bypass_rule_present() then
+		-- nothing to bypass: do not leave a lookup in front of every packet
+		for _, h in ipairs((function()
+			local out = {}
+			for line in (sys.exec("nft -a list chain inet fw4 openclash 2>/dev/null") or ""):gmatch("[^\n]+") do
+				if line:find("@" .. BYPASS_SET, 1, true) then
+					local hh = line:match("handle (%d+)")
+					if hh then out[#out + 1] = hh end
+				end
+			end
+			return out
+		end)()) do
+			sys.call("nft delete rule inet fw4 openclash handle " .. h .. " 2>/dev/null")
+		end
 	end
 	return #list
 end
@@ -4250,8 +4266,10 @@ function methods.tick()
 	_qos_dirty = false
 	local apps = collect_app_stats(now)
 	if _qos_dirty then apply_qos() end
-	-- cheap self-heal: the redirect chain is rebuilt by fw4 and OpenClash
-	if not bypass_rule_present() then apply_bypass() end
+	-- keep the redirect chain in step with the rules: add the bypass return
+	-- when something needs it, remove it when nothing does
+	local want_bypass = bypass_addresses()
+	if (#want_bypass > 0) ~= bypass_rule_present() then apply_bypass() end
 	return { success = true, running = true,
 	         expired = e.expired, schedule_changed = sc.changed,
 	         active = sc.active, new_devices = nd, oui_lookups = oui,
